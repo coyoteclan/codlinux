@@ -91,7 +91,7 @@ fn main()
         let args_str = args.join(" ");
         let options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
-                .with_inner_size([400.0, 120.0 + ((120.0 * executables.len() as f32) - 120.0)]), // Set desired window size
+                .with_inner_size([400.0, 120.0 + ((120.0 * executables.len() as f32) - 120.0)]),
             ..Default::default()
         };
         eframe::run_native(
@@ -125,6 +125,13 @@ impl CoDLinuxApp
 impl eframe::App for CoDLinuxApp
 {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let mut style = (*ctx.style()).clone();
+        style.visuals.widgets.hovered.bg_stroke.color = egui::Color32::from_rgb(180, 127, 240);
+        style.visuals.widgets.active.bg_stroke.color = egui::Color32::from_rgb(187, 220, 61);
+        style.visuals.widgets.hovered.bg_stroke.width = 1.5;
+        style.visuals.widgets.active.bg_stroke.width = 2.0;
+        ctx.set_style(style);
+
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.vertical_centered(|ui| {
                 ui.heading("Choose a Game");
@@ -133,13 +140,6 @@ impl eframe::App for CoDLinuxApp
 
                     let text = egui::RichText::new(game_name).size(24.0).strong();
                     let button = egui::Button::new(text).min_size(egui::vec2(300.0, 100.0));
-
-                    /*let button = egui::Button::new(
-                        egui::RichText::new(&game_name)
-                            .size(24.0)
-                            .strong(),
-                    )
-                    .min_size(egui::vec2(300.0, 100.0));*/
 
                     if ui.add(button).clicked() {
 
