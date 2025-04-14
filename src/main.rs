@@ -91,7 +91,7 @@ fn main()
         let args_str = args.join(" ");
         let options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
-                .with_inner_size([400.0, 120.0 + ((120.0 * executables.len() as f32) - 120.0)]),
+                .with_inner_size([400.0, 120.0 + ((120.0 * executables.len() as f32) - 120.0) + 20.0]),
             ..Default::default()
         };
         eframe::run_native(
