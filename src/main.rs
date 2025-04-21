@@ -1,16 +1,22 @@
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use eframe::egui;
-use utils::{create_desktop_file, my_exe_path, get_fancy_name, reg_uri_scheme, exec_command, launch_game};
+use utils::{create_desktop_file, my_exe_path, get_fancy_name, reg_uri_scheme, launch_game};
 
 mod utils;
 
 fn main()
 {
+    utils::DL_STARTED.store(false, Ordering::Relaxed);
+    utils::DL_DONE.store(false, Ordering::Relaxed);
+    utils::UPDATE_AVAILABLE.store(false, Ordering::Relaxed);
+
     let resolution = utils::get_display_mode();
     if let Some((width, height, rate)) = resolution {
         println!("CoDLinux: Display resolution: {}x{} {} Hz", width, height, rate);
-    } else {
+    }
+    else {
         println!("CoDLinux: Unable to get display resolution.");
     }
 
@@ -34,11 +40,14 @@ fn main()
         let exe_name = utils::get_exe_name(executable);
         if exe_name.to_lowercase() == "codmp.exe" {
             cod1 = true;
-        } else if exe_name.to_lowercase() == "coduomp.exe" {
+        }
+        else if exe_name.to_lowercase() == "coduomp.exe" {
             uo = true;
-        } else if exe_name.to_lowercase() == "iw1x.exe" {
+        }
+        else if exe_name.to_lowercase() == "iw1x.exe" {
             iw1x = true;
-        } else if exe_name.to_lowercase() == "t1x.exe" {
+        }
+        else if exe_name.to_lowercase() == "t1x.exe" {
             t1x = true;
         }
     }
@@ -84,11 +93,7 @@ fn main()
             if iw1x {
                 for exe in &executables {
                     if exe.to_lowercase().contains("iw1x.exe") {
-                        /*exec_command(&format!(
-                            "WINEPREFIX={} MESA_EXTENSION_MAX_YEAR=2003 force_s3tc_enable=true __GL_ExtensionStringVersion=17700 wine {} {}",
-                            wineprefix, exe, args_str
-                        )).unwrap();
-                        utils::restore_display_mode().unwrap();*/
+                        utils::exec_command(r#"notify-send --app-name=CoDLinux --icon=codlinux --transient --expire-time 2000 "Launching iw1x...""#).unwrap();
                         launch_game(&wineprefix, exe, &args_str).unwrap();
                         launched = true;
                     }
@@ -97,12 +102,7 @@ fn main()
             if t1x {
                 for exe in &executables {
                     if exe.to_lowercase().contains("t1x.exe") {
-                        /*exec_command(&format!(
-                            "MESA_EXTENSION_MAX_YEAR=2003 force_s3tc_enable=true __GL_ExtensionStringVersion=17700 wine {} {}",
-                            exe, args_str
-                        )).unwrap();
-                        utils::restore_display_mode().unwrap();*/
-
+                        utils::exec_command(r#"notify-send --app-name=CoDLinux --icon=codlinux --transient --expire-time 2000 "Launching t1x...""#).unwrap();
                         launch_game(&wineprefix, exe, &args_str).unwrap();
                         launched = true;
                     }
@@ -124,13 +124,16 @@ fn main()
         let args_str = args.join(" ");
         let options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
-                .with_inner_size([400.0, 120.0 + ((120.0 * executables.len() as f32) - 120.0) + 40.0]),
+                .with_inner_size([400.0, 120.0 + ((120.0 * executables.len() as f32) - 120.0) + 100.0]),
+            centered: true,
             ..Default::default()
         };
 
         // Create a shared thread handle
         let game_thread = Arc::new(Mutex::new(None::<thread::JoinHandle<()>>));
-        let app = CoDLinuxApp::new(executables.clone(), args_str.clone(), uo, game_thread.clone(), wineprefix.clone());
+        let dl_thread = Arc::new(Mutex::new(None::<thread::JoinHandle<()>>));
+        let dl_size = utils::get_download_size();
+        let app = CoDLinuxApp::new(executables.clone(), args_str.clone(), uo, game_thread.clone(), dl_thread.clone(), wineprefix.clone(), dl_size);
 
         eframe::run_native(
             "CoDLinux",
@@ -140,6 +143,9 @@ fn main()
 
         // Join the game thread after GUI closes
         if let Some(handle) = game_thread.lock().unwrap().take() {
+            handle.join().unwrap();
+        }
+        if let Some(handle) = dl_thread.lock().unwrap().take() {
             handle.join().unwrap();
         }
         println!("CoDLinux: GUI closed.");
@@ -152,13 +158,17 @@ pub struct CoDLinuxApp
     args: String,
     uo: bool,
     game_thread: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
+    dl_thread: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
     remember: bool,
     wine_prefix: String,
+    show_update_popup: bool,
+    downloading: bool,
+    dl_size: String,
 }
 
 impl CoDLinuxApp
 {
-    fn new(executables: Vec<String>, args: String, uo: bool, game_thread: Arc<Mutex<Option<thread::JoinHandle<()>>>>, wine_prefix: String) -> Self {
+    fn new(executables: Vec<String>, args: String, uo: bool, game_thread: Arc<Mutex<Option<thread::JoinHandle<()>>>>, dl_thread: Arc<Mutex<Option<thread::JoinHandle<()>>>>, wine_prefix: String, dl_size: String) -> Self {
         println!("CoDLinux: Creating app...");
         println!("CoDLinux: Prefix: {:?}", wine_prefix);
         CoDLinuxApp {
@@ -166,8 +176,12 @@ impl CoDLinuxApp
             args,
             uo,
             game_thread,
+            dl_thread,
             remember: false,
             wine_prefix,
+            show_update_popup: false,
+            downloading: false,
+            dl_size,
         }
     }
 }
@@ -177,7 +191,7 @@ impl eframe::App for CoDLinuxApp
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let mut visuals = egui::Visuals::default();
         visuals.text_cursor = egui::style::TextCursorStyle {
-            stroke: egui::Stroke::new(2.0, egui::Color32::from_rgb(187, 220, 61)), // Red cursor
+            stroke: egui::Stroke::new(2.0, egui::Color32::from_rgb(187, 220, 61)),
             preview: true,
             blink: true,
             on_duration: 0.5,
@@ -193,7 +207,24 @@ impl eframe::App for CoDLinuxApp
         style.visuals.widgets.active.bg_stroke.width = 2.0;
         ctx.set_style(style);
 
+        if !self.show_update_popup {
+            if utils::UPDATE_AVAILABLE.load(Ordering::Relaxed) {
+                self.show_update_popup = true;
+                utils::UPDATE_AVAILABLE.store(false, Ordering::Relaxed);
+                println!("Setting show_update_popup to true");
+            }
+        }
+
+        if utils::DL_DONE.load(Ordering::Relaxed) {
+            self.show_update_popup = false;
+            self.downloading = false;
+            std::process::exit(0);
+        }
+
         egui::CentralPanel::default().show(ctx, |ui| {
+            if self.show_update_popup {
+                ui.disable();
+            }
             ui.visuals_mut().selection.stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(187, 220, 61));
             ui.vertical_centered(|ui| {
                 ui.heading("Choose a Game");
@@ -227,6 +258,8 @@ impl eframe::App for CoDLinuxApp
                     }
                 }
 
+                ui.heading("Options");
+
                 ui.checkbox(&mut self.remember, "Remember my choice");
                 let text_edit = ui.add(egui::TextEdit::singleline(&mut self.wine_prefix)
                     .hint_text("Wine Prefix")
@@ -238,7 +271,68 @@ impl eframe::App for CoDLinuxApp
                         println!("CoDLinux: New Wine Prefix: {}", self.wine_prefix);
                     }
                 }
+
+                let update_button = egui::Button::new(egui::RichText::new("Check For Updates").size(16.0));//.min_size(egui::vec2(300.0, 100.0));
+                if ui.add(update_button).clicked() {
+                    let _ = thread::spawn(move || {
+                        utils::exec_command(r#"notify-send --app-name=CoDLinux --icon=codlinux --expire-time 3000 "Checking for updates...""#).unwrap();
+                        let check:bool = utils::check_update().unwrap();
+                        if check {
+                            utils::UPDATE_AVAILABLE.store(true, Ordering::Relaxed);
+                            utils::exec_command(r#"notify-send --app-name=CoDLinux --icon=codlinux --expire-time 3000 "Update available!""#).unwrap();
+                        }
+                        else {
+                            utils::exec_command(r#"notify-send --app-name=CoDLinux --icon=codlinux --expire-time 3000 "No update available!""#).unwrap();
+                        }
+                    });
+                }
             });
         });
+
+        if self.show_update_popup {
+            let centered = ctx.screen_rect().center();
+            egui::Window::new("Update")
+                .default_pos(centered)
+                .pivot(egui::Align2::CENTER_CENTER)
+                .default_size(egui::Vec2::new(250.0, 50.0))
+                //.auto_sized()
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.vertical_centered(|ui| {
+                        if !self.downloading && !utils::DL_STARTED.load(Ordering::Relaxed) {
+                            ui.label("A new version of CoDLinux available!");
+                        }
+                        else {
+                            ui.label(format!("Downloading... ({})", &self.dl_size.to_string()));
+                            let spinner = egui::widgets::Spinner::new().color(egui::Color32::from_rgb(187, 220, 61));
+                            ui.add(spinner);
+
+                            if !utils::DL_STARTED.load(Ordering::Relaxed) && !utils::DL_DONE.load(Ordering::Relaxed) {
+                                let dl_handle = thread::spawn(move || {
+                                    println!("CoDLinux: downloading update...");
+                                    let _ = utils::dl_update();
+                                });
+        
+                                *self.dl_thread.lock().unwrap() = Some(dl_handle);
+                            }
+                        }
+
+                        ui.horizontal_centered(|ui| {
+                            if !self.downloading && !utils::DL_STARTED.load(Ordering::Relaxed) {
+
+                                ui.add_space(65.0);
+        
+                                if ui.button("Download").clicked() {
+                                    self.downloading = true;
+                                }
+                                if ui.button("Close").clicked() {
+                                    self.show_update_popup = false;
+                                }
+                            }
+                        });
+                    });
+                });
+        }
     }
 }

@@ -1,15 +1,20 @@
 const ICON_PNG: &[u8] = include_bytes!("../assets/icon.png");
 
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 static RESOLUTION: OnceLock<(u32, u32)> = OnceLock::new();
 static REFRESH_RATE: OnceLock<f32> = OnceLock::new();
 static DISPLAY_OUTPUT: OnceLock<String> = OnceLock::new();
+pub(crate) static DL_STARTED: AtomicBool = AtomicBool::new(false);
+pub(crate) static DL_DONE: AtomicBool = AtomicBool::new(false);
+pub(crate) static UPDATE_AVAILABLE: AtomicBool = AtomicBool::new(false);
 
 use std::fs;
 use std::path::Path;
 use std::io::Write;
 use std::collections::HashMap;
+use chrono::{DateTime, Utc};
 
 pub(crate) fn get_executables() -> Vec<String>
 {
@@ -268,4 +273,132 @@ pub(crate) fn save_wine_prefix(prefix: &str) -> std::io::Result<()> {
 pub(crate) fn recall_wine_prefix() -> std::io::Result<String> {
     let config = read_config()?;
     Ok(config.get("wine_prefix").cloned().unwrap_or_default())
+}
+
+fn latest_release_date() -> Result<DateTime<Utc>, Box<dyn std::error::Error>>
+{
+    let cmd = "curl -s https://api.github.com/repos/coyoteclan/codlinux/releases/latest | grep 'published_at'";
+    let output = std::process::Command::new("bash")
+        .arg("-c")
+        .arg(cmd)
+        .output()
+        .expect("failed");
+    
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let str_output = stdout.to_string();
+    println!("tok_err line {}", str_output);
+    let tok:Vec<&str> = str_output.split('"').collect();
+
+    let release_date = DateTime::parse_from_rfc3339(tok[3])?.with_timezone(&Utc);
+    println!("release_date: {}", release_date.to_string());
+
+    Ok(release_date)
+}
+
+fn get_download_url() -> String
+{
+    let cmd = "curl -s https://api.github.com/repos/coyoteclan/codlinux/releases/latest | grep 'browser_download_url'";
+    let output = std::process::Command::new("bash")
+        .arg("-c")
+        .arg(cmd)
+        .output()
+        .expect("failed");
+    
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let str_output = stdout.to_string();
+    let tok:Vec<&str> = str_output.split('"').collect();
+    println!("url: {}", &tok[3].to_string());
+
+    tok[3].to_string()
+}
+
+pub(crate) fn get_download_size() -> String
+{
+    let cmd = format!("curl -s https://api.github.com/repos/coyoteclan/codlinux/releases/latest | grep 'size'").to_string();
+    let output = std::process::Command::new("bash")
+        .arg("-c")
+        .arg(cmd)
+        .output()
+        .expect("failed");
+    
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let tok:Vec<&str> = stdout.split(":").collect();
+    let tok_:Vec<&str> = tok[1].split(",").collect();
+    let size = tok_[0].to_string().trim().to_string();
+    let mb_size = format!("{:.2} MB", size.parse::<f32>().unwrap() / (1024.0 * 1024.0) as f32);
+
+    mb_size
+}
+
+fn get_compile_time() -> Result<DateTime<Utc>, Box<dyn std::error::Error>>
+{
+    let compile_time = DateTime::parse_from_rfc3339(compile_time::datetime_str!())?.with_timezone(&Utc);
+    Ok(compile_time)
+}
+
+pub(crate) fn check_update() -> Result<bool, Box<dyn std::error::Error>>
+{
+    let release_date = latest_release_date()?;
+    let compile_time = get_compile_time()?;
+    let difference = release_date - compile_time;
+    //println!("difference: {}", difference.to_string());
+    Ok(difference > chrono::Duration::hours(1))
+}
+
+pub(crate) fn dl_update() -> std::io::Result<()>
+{
+    if DL_STARTED.load(Ordering::Relaxed) || DL_DONE.load(Ordering::Relaxed) {
+        return Ok(());
+    }
+    DL_STARTED.store(true, Ordering::Relaxed);
+    let url = get_download_url().to_string();
+    let cmd = format!("wget -O codlinux_new {}", &url);
+
+    // Execute the download command
+    let output = std::process::Command::new("bash")
+        .arg("-c")
+        .arg(&cmd)
+        .current_dir(my_exe_path())
+        .output();
+
+    // Check if the command executed successfully
+    match output {
+        Ok(output) => {
+            if output.status.success() {
+                println!("Download completed successfully.");
+                // Replace the old binary with the new one
+                let replace_cmd = "rm codlinux && mv codlinux_new codlinux && chmod +x codlinux";
+                let replace_output = std::process::Command::new("bash")
+                    .arg("-c")
+                    .arg(replace_cmd)
+                    .current_dir(my_exe_path())
+                    .output();
+
+                if replace_output.is_err() || !replace_output.unwrap().status.success() {
+                    eprintln!("Failed to replace the old binary with the new one.");
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "Failed to replace the binary.",
+                    ));
+                }
+
+                DL_DONE.store(true, Ordering::Relaxed);
+            } else {
+                eprintln!(
+                    "Download failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "Download failed.",
+                ));
+            }
+        }
+        Err(e) => {
+            eprintln!("Failed to execute download command: {}", e);
+            return Err(e);
+        }
+    }
+
+    Ok(())
 }
