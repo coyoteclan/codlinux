@@ -6,7 +6,7 @@ To run the games, you need a script. But using scripts is a little inconvenient.
 - You can remove the remembered game from codlinux.cfg. For example,
   ![Screenshot_2025-04-21_16-41-01](https://github.com/user-attachments/assets/144e615d-1fc0-484e-8730-213c59df2699)
 - For safety reasons, the wine prefix folder should be created **before** setting in CoDLinux
-- You can only check for updates 60 times per day
+- You can only check for updates 60 times per hour
 
 ## Todo
 - Verify the game exe (version)
