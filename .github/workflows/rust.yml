@@ -21,7 +21,7 @@ jobs:
       run: cargo build -r
 
     - name: Generate Tag Name
-      run: echo "Release v$(grep -i 'version' Cargo.toml | awk -F'"' '{print $2}')" >> $GITHUB_ENV
+      run: echo "release_name=Release v$(grep -i 'version' Cargo.toml | awk -F'"' '{print $2}')" >> $GITHUB_ENV
 
     - name: Generate Tag Name
       run: echo "tag_name=release-$(grep -i 'version' Cargo.toml | awk -F'"' '{print $2}')" >> $GITHUB_ENV
