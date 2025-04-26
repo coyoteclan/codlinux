@@ -1,3 +1,5 @@
+static VERSION: &str = env!("CARGO_PKG_VERSION");
+
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -8,6 +10,7 @@ mod utils;
 
 fn main()
 {
+    println!("CoDLinux v{}", &VERSION);
     utils::DL_STARTED.store(false, Ordering::Relaxed);
     utils::DL_DONE.store(false, Ordering::Relaxed);
     utils::UPDATE_AVAILABLE.store(false, Ordering::Relaxed);
@@ -124,10 +127,11 @@ fn main()
         let args_str = args.join(" ");
         let options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
-                .with_inner_size([400.0, 120.0 + ((120.0 * executables.len() as f32) - 120.0) + 100.0]),
+                .with_inner_size([400.0, 140.0 + 115.0 * executables.len() as f32]),
             centered: true,
             ..Default::default()
         };
+        println!("executables: {:.2}", executables.len() as f32);
 
         // Create a shared thread handle
         let game_thread = Arc::new(Mutex::new(None::<thread::JoinHandle<()>>));
@@ -286,6 +290,9 @@ impl eframe::App for CoDLinuxApp
                         }
                     });
                 }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::BOTTOM), |ui| {
+                    ui.label(format!("v{}", &VERSION));
+                });
             });
         });
 
