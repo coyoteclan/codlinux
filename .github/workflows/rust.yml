@@ -29,14 +29,14 @@ jobs:
                   | head -n1 \
                   | cut -d\" -f2)
           echo "RELEASE_NAME=Release v${ver}" >> $GITHUB_ENV
-          echo "TAG_NAME=release-${ver}" >> $GITHUB_ENV
+          echo "TAG_NAME=${ver}" >> $GITHUB_ENV
 
       - name: Create GitHub Release
         uses: ncipollo/release-action@v1
         with:
           tag:   ${{ env.TAG_NAME }}
           name:  ${{ env.RELEASE_NAME }}
-          body:  "Automated release of v${{ steps.ver.outputs.ver }}"
+          body:  "Automated release of v${{ env.TAG_NAME }}"
           draft: false
           prerelease: false
           artifacts: "target/release/codlinux"
