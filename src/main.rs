@@ -1,19 +1,22 @@
 static VERSION: &str = env!("CARGO_PKG_VERSION");
 
+mod utils;
+mod screenshooter;
+
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use eframe::egui;
-use utils::{create_desktop_file, my_exe_path, get_fancy_name, reg_uri_scheme, launch_game};
-
-mod utils;
+use utils::{create_desktop_file, my_exe_path, get_fancy_name, reg_uri_scheme, launch_game, notify};
+use screenshooter::capture;
 
 fn main()
 {
     println!("CoDLinux v{}", &VERSION);
-    utils::DL_STARTED.store(false, Ordering::Relaxed);
-    utils::DL_DONE.store(false, Ordering::Relaxed);
-    utils::UPDATE_AVAILABLE.store(false, Ordering::Relaxed);
+    //utils::DL_STARTED.store(false, Ordering::Relaxed);
+    //utils::DL_DONE.store(false, Ordering::Relaxed);
+    //utils::UPDATE_AVAILABLE.store(false, Ordering::Relaxed);
+    //screenshooter::ASSIST_MOSS.store(false, Ordering::Relaxed);
 
     let resolution = utils::get_display_mode();
     if let Some((width, height, rate)) = resolution {
@@ -36,7 +39,7 @@ fn main()
     }
     println!("CoDLinux: Found game executables:");
     for executable in &executables {
-        println!("  -{}", executable);
+        println!("  {}", executable);
     }
 
     for executable in &executables {
@@ -73,12 +76,17 @@ fn main()
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let backupprefix = format!("{}/.wine", home);
 
-    let mut wineprefix = utils::recall_wine_prefix().unwrap_or_else(|_| {
+    let mut wineprefix = utils::load_setting("wine_prefix").unwrap_or_else(|_| {
         backupprefix.clone()
     }
     );
     if &wineprefix == "" {
         wineprefix = backupprefix;
+    }
+
+    let assist_moss = utils::load_setting("assist_moss").unwrap_or_default();
+    if &assist_moss == "yes" {
+        screenshooter::ASSIST_MOSS.store(true, Ordering::Relaxed);
     }
 
     let mut args: Vec<String> = std::env::args().skip(1).collect::<Vec<_>>();
@@ -96,7 +104,8 @@ fn main()
             if iw1x {
                 for exe in &executables {
                     if exe.to_lowercase().contains("iw1x.exe") {
-                        utils::exec_command(r#"notify-send --app-name=CoDLinux --icon=codlinux --transient --expire-time 2000 "Launching iw1x...""#).unwrap();
+                        notify("Launching iw1x...", 2000).unwrap();
+                        capture().unwrap();
                         launch_game(&wineprefix, exe, &args_str).unwrap();
                         launched = true;
                     }
@@ -105,7 +114,8 @@ fn main()
             if t1x {
                 for exe in &executables {
                     if exe.to_lowercase().contains("t1x.exe") {
-                        utils::exec_command(r#"notify-send --app-name=CoDLinux --icon=codlinux --transient --expire-time 2000 "Launching t1x...""#).unwrap();
+                        notify("Launching t1x...", 2000).unwrap();
+                        capture().unwrap();
                         launch_game(&wineprefix, exe, &args_str).unwrap();
                         launched = true;
                     }
@@ -116,8 +126,10 @@ fn main()
 
     if !launched {
         let args_str = args.join(" ");
-        let saved_game = utils::recall_game().unwrap();
+        //let saved_game = utils::recall_game().unwrap();
+        let saved_game = utils::load_setting("remembered_game").unwrap();
         if &saved_game != "" {
+            capture().unwrap();
             launch_game(&wineprefix, &saved_game, &args_str).unwrap();
             launched = true;
         }
@@ -134,10 +146,11 @@ fn main()
         println!("executables: {:.2}", executables.len() as f32);
 
         // Create a shared thread handle
+        let capture_thread = Arc::new(Mutex::new(None::<thread::JoinHandle<()>>));
         let game_thread = Arc::new(Mutex::new(None::<thread::JoinHandle<()>>));
         let dl_thread = Arc::new(Mutex::new(None::<thread::JoinHandle<()>>));
         let dl_size = utils::get_download_size();
-        let app = CoDLinuxApp::new(executables.clone(), args_str.clone(), uo, game_thread.clone(), dl_thread.clone(), wineprefix.clone(), dl_size);
+        let app = CoDLinuxApp::new(executables.clone(), args_str.clone(), uo, game_thread.clone(), dl_thread.clone(), wineprefix.clone(), dl_size, screenshooter::ASSIST_MOSS.load(Ordering::Relaxed), capture_thread.clone());
 
         eframe::run_native(
             "CoDLinux",
@@ -146,6 +159,9 @@ fn main()
         ).unwrap();
 
         // Join the game thread after GUI closes
+        if let Some(handle) = capture_thread.lock().unwrap().take() {
+            handle.join().unwrap();
+        }
         if let Some(handle) = game_thread.lock().unwrap().take() {
             handle.join().unwrap();
         }
@@ -168,11 +184,13 @@ pub struct CoDLinuxApp
     show_update_popup: bool,
     downloading: bool,
     dl_size: String,
+    assist_moss: bool,
+    capture_thread: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
 }
 
 impl CoDLinuxApp
 {
-    fn new(executables: Vec<String>, args: String, uo: bool, game_thread: Arc<Mutex<Option<thread::JoinHandle<()>>>>, dl_thread: Arc<Mutex<Option<thread::JoinHandle<()>>>>, wine_prefix: String, dl_size: String) -> Self {
+    fn new(executables: Vec<String>, args: String, uo: bool, game_thread: Arc<Mutex<Option<thread::JoinHandle<()>>>>, dl_thread: Arc<Mutex<Option<thread::JoinHandle<()>>>>, wine_prefix: String, dl_size: String, assist_moss: bool, capture_thread: Arc<Mutex<Option<thread::JoinHandle<()>>>>) -> Self {
         println!("CoDLinux: Creating app...");
         println!("CoDLinux: Prefix: {:?}", wine_prefix);
         CoDLinuxApp {
@@ -186,6 +204,8 @@ impl CoDLinuxApp
             show_update_popup: false,
             downloading: false,
             dl_size,
+            assist_moss,
+            capture_thread,//: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -222,6 +242,7 @@ impl eframe::App for CoDLinuxApp
         if utils::DL_DONE.load(Ordering::Relaxed) {
             self.show_update_popup = false;
             self.downloading = false;
+            notify("Download Complete!", 10000).unwrap();
             std::process::exit(0);
         }
 
@@ -241,15 +262,34 @@ impl eframe::App for CoDLinuxApp
                     if ui.add(button).clicked() {
                         if self.remember {
                             println!("CoDLinux: Remembering choice for {}, path: {}", &game_name, &executable);
-                            let _ = utils::remember_game(&executable);
+                            //let _ = utils::remember_game(&executable);
+                            let _ = utils::save_setting("remembered_game", &executable);
+                        }
+                        if self.assist_moss {
+                            screenshooter::ASSIST_MOSS.store(true, Ordering::Relaxed);
+                            let _ = utils::save_setting("assist_moss", "yes");
+                        }
+                        else {
+                            let _ = utils::save_setting("assist_moss", "no");
                         }
                         let exe = executable.clone();
                         let args = self.args.clone();
+                        
+                        let capture_result = capture();
+                        
+                        /*let capture_handle = match capture_result {
+                            Ok(handle) => handle,
+                            Err(e) => {
+                                eprintln!("Failed to start capture: {}", e);
+                                return; // Exit early if capture setup fails
+                            }
+                        };*/
 
                         let wine_prefix = self.wine_prefix.clone();
                         let game_handle = thread::spawn(move || {
                             //let _ = utils::save_wine_prefix(&wine_prefix);
-                            let rrr = utils::save_wine_prefix(&wine_prefix);
+                            //let rrr = utils::save_wine_prefix(&wine_prefix);
+                            let rrr = utils::save_setting("wine_prefix", &wine_prefix);
                             if rrr.is_err() {
                                 println!("CoDLinux: Error saving wine prefix: {}", rrr.unwrap_err());
                             }
@@ -257,6 +297,21 @@ impl eframe::App for CoDLinuxApp
                             let _ = launch_game(&wine_prefix, &exe, &args);
                         });
 
+                        //*self.capture_thread.lock().unwrap() = Some(capture_handle);
+                        match capture_result {
+                            Ok(Some(handle)) => {
+                                // Feature is enabled, store the thread handle for later use
+                                *self.capture_thread.lock().unwrap() = Some(handle);
+                            }
+                            Ok(None) => {
+                                // Feature is disabled, no action needed
+                                println!("ASSIST_MOSS is disabled, skipping screenshot capture.");
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to start capture: {}", e);
+                                // Handle the error as needed (e.g., show a message or proceed without capture)
+                            }
+                        }
                         *self.game_thread.lock().unwrap() = Some(game_handle);
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
@@ -265,6 +320,7 @@ impl eframe::App for CoDLinuxApp
                 ui.heading("Options");
 
                 ui.checkbox(&mut self.remember, "Remember my choice");
+                ui.checkbox(&mut self.assist_moss, "Assist Moss");
                 let text_edit = ui.add(egui::TextEdit::singleline(&mut self.wine_prefix)
                     .hint_text("Wine Prefix")
                     .desired_width(200.0));
@@ -279,14 +335,14 @@ impl eframe::App for CoDLinuxApp
                 let update_button = egui::Button::new(egui::RichText::new("Check For Updates").size(16.0));//.min_size(egui::vec2(300.0, 100.0));
                 if ui.add(update_button).clicked() {
                     let _ = thread::spawn(move || {
-                        utils::exec_command(r#"notify-send --app-name=CoDLinux --icon=codlinux --expire-time 3000 "Checking for updates...""#).unwrap();
+                        notify("Checking for updates...", 3000).unwrap();
                         let check:bool = utils::check_update().unwrap();
                         if check {
                             utils::UPDATE_AVAILABLE.store(true, Ordering::Relaxed);
-                            utils::exec_command(r#"notify-send --app-name=CoDLinux --icon=codlinux --expire-time 3000 "Update available!""#).unwrap();
+                            notify("Update available!", 3000).unwrap();
                         }
                         else {
-                            utils::exec_command(r#"notify-send --app-name=CoDLinux --icon=codlinux --expire-time 3000 "No update available!""#).unwrap();
+                            notify("No update available!", 3000).unwrap();
                         }
                     });
                 }

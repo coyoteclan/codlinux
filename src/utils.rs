@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 static RESOLUTION: OnceLock<(u32, u32)> = OnceLock::new();
 static REFRESH_RATE: OnceLock<f32> = OnceLock::new();
 static DISPLAY_OUTPUT: OnceLock<String> = OnceLock::new();
+pub(crate) static GAME_RUNNING: AtomicBool = AtomicBool::new(false);
 pub(crate) static DL_STARTED: AtomicBool = AtomicBool::new(false);
 pub(crate) static DL_DONE: AtomicBool = AtomicBool::new(false);
 pub(crate) static UPDATE_AVAILABLE: AtomicBool = AtomicBool::new(false);
@@ -15,6 +16,7 @@ use std::path::Path;
 use std::io::Write;
 use std::collections::HashMap;
 use chrono::{DateTime, Utc};
+use sysinfo::System;
 
 pub(crate) fn get_executables() -> Vec<String>
 {
@@ -66,7 +68,7 @@ pub(crate) fn get_fancy_name(executable: &str, uo: &bool) -> String
     fancy_name.to_string()
 }
 
-pub(crate) fn create_desktop_file(uo: &bool, executable_path: &str) -> std::io::Result<()> 
+pub(crate) fn create_desktop_file(uo: &bool, executable_path: &str) -> std::io::Result<()>
 {
     let app_name = if *uo { "CoDLinux (uo)" } else { "CoDLinux" };
     let desktop_file_content = format!(
@@ -117,7 +119,7 @@ pub(crate) fn exec_command(cmd: &str) -> std::io::Result<()>
         .output()?;
 
     if !output.status.success() {
-        eprintln!("Error executing command: {}", String::from_utf8_lossy(&output.stderr));
+        eprintln!("Error executing command: stdout: {}, stderr: {}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
     }
 
     Ok(())
@@ -129,7 +131,9 @@ pub(crate) fn launch_game(wine_prefix: &str, executable: &str, args: &str) -> st
         "WINEPREFIX={} MESA_EXTENSION_MAX_YEAR=2003 force_s3tc_enable=true __GL_ExtensionStringVersion=17700 wine {} {}",
         wine_prefix, executable, args
     );
+    GAME_RUNNING.store(true, Ordering::Relaxed);
     exec_command(&cmd).unwrap();
+    GAME_RUNNING.store(false, Ordering::Relaxed);
     restore_display_mode().unwrap();
 
     Ok(())
@@ -249,30 +253,17 @@ fn write_config(config: &HashMap<String, String>) -> std::io::Result<()> {
     Ok(())
 }
 
-// Save the remembered game path
-pub(crate) fn remember_game(game: &str) -> std::io::Result<()> {
+pub(crate) fn save_setting(seting: &str, value: &str) -> std::io::Result<()>
+{
     let mut config = read_config()?;
-    config.insert("remembered_game".to_string(), game.to_string());
+    config.insert(seting.to_string(), value.to_string());
     write_config(&config)
 }
 
-// Retrieve the remembered game path
-pub(crate) fn recall_game() -> std::io::Result<String> {
+pub(crate) fn load_setting(setting: &str) -> std::io::Result<String>
+{
     let config = read_config()?;
-    Ok(config.get("remembered_game").cloned().unwrap_or_default())
-}
-
-// Save the Wine prefix
-pub(crate) fn save_wine_prefix(prefix: &str) -> std::io::Result<()> {
-    let mut config = read_config()?;
-    config.insert("wine_prefix".to_string(), prefix.to_string());
-    write_config(&config)
-}
-
-// Retrieve the Wine prefix
-pub(crate) fn recall_wine_prefix() -> std::io::Result<String> {
-    let config = read_config()?;
-    Ok(config.get("wine_prefix").cloned().unwrap_or_default())
+    Ok(config.get(setting).cloned().unwrap_or_default())
 }
 
 fn latest_release_date() -> Result<DateTime<Utc>, Box<dyn std::error::Error>>
@@ -401,4 +392,37 @@ pub(crate) fn dl_update() -> std::io::Result<()>
     }
 
     Ok(())
+}
+
+pub(crate) fn notify(message: &str, expire_time: u32) -> std::io::Result<()>
+{
+    let cmd = format!(r#"notify-send --app-name=CoDLinux --icon=codlinux --expire-time {} "{}""#, expire_time, message);
+    exec_command(&cmd).unwrap();
+    Ok(())
+}
+
+pub(crate) fn moss_running() -> std::io::Result<bool>
+{
+    let s = System::new_all();
+    let p = s.processes_by_name("oss".as_ref());
+    let i: u32 = p.count() as u32;
+    
+    if i == 0 {
+        return Ok(false);
+    }
+
+    Ok(true)
+}
+
+pub(crate) fn moss_capturing() -> std::io::Result<bool>
+{
+    let s = System::new_all();
+    let p = s.processes_by_name("oss".as_ref());
+    let i: u32 = p.count() as u32;
+    
+    if i != 5 {
+        return Ok(false);
+    }
+
+    Ok(true)
 }
