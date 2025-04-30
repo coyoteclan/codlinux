@@ -7,6 +7,8 @@ To run the games, you need a script. But using scripts is a little inconvenient.
   ![Screenshot_2025-04-21_16-41-01](https://github.com/user-attachments/assets/144e615d-1fc0-484e-8730-213c59df2699)
 - For safety reasons, the wine prefix folder should be created **before** setting in CoDLinux
 - You can only check for updates 60 times per hour
+- Moss Assist is primitive. You need to close the game, start Moss capture, and then run the game with Moss Assist in CoDLinux
+- There is no plan to improve Moss Assist
 
 ## Todo
 - Verify the game exe (version)

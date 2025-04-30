@@ -30,6 +30,7 @@ pub(crate) fn capture() -> std::io::Result<Option<thread::JoinHandle<()>>>
     }
 
     println!("Starting screenshot capture process");
+    exec_command("rm -rf /tmp/codlinux_ss/*").unwrap();
 
     println!("creating thread");
     let handle = thread::spawn(move || {
