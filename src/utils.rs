@@ -424,6 +424,10 @@ pub(crate) fn moss_capturing() -> std::io::Result<bool>
 {
     let s = System::new_all();
     let p = s.processes_by_name("oss".as_ref());
+    for process in System::new_all().processes_by_name("oss".as_ref()) {
+        println!("------------------------------------");
+        println!("process name: {:?}", process.name());
+    }
     let i: u32 = p.count() as u32;
     
     if i != 5 {
