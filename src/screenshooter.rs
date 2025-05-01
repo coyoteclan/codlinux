@@ -38,10 +38,9 @@ pub(crate) fn capture() -> std::io::Result<Option<thread::JoinHandle<()>>>
         if !tmp_dir.exists() {
             fs::create_dir(tmp_dir).unwrap();
         }
-        //let capturing = Arc::new(AtomicBool::new(true));
-        //let capturing_clone = Arc::clone(&capturing);
+        thread::sleep(Duration::from_secs(5)); // wait for the game to open
         
-        let mut count = 0;
+        let mut count = 1;
         while moss_capturing().unwrap()
         {
             let ss_path = tmp_dir.join(format!("{:03}.JPG", count));
@@ -55,7 +54,7 @@ pub(crate) fn capture() -> std::io::Result<Option<thread::JoinHandle<()>>>
                 eprintln!("Failed to capture screenshot: {:?}", output.stderr);
             }
             count += 1;
-            thread::sleep(Duration::from_secs(15));
+            thread::sleep(Duration::from_secs(60));
         }
         thread::sleep(Duration::from_secs(6)); // make sure moss has finished
         
@@ -74,15 +73,7 @@ pub(crate) fn capture() -> std::io::Result<Option<thread::JoinHandle<()>>>
             let del_cmd = format!("zip -d {} *.JPG", last_zip_path.to_str().unwrap());
             exec_command(&del_cmd).unwrap();
             thread::sleep(Duration::from_secs(1));
-            /*let output = Command::new("zip")
-                .arg("-d")
-                .arg(last_zip_path.to_str().unwrap())
-                .arg("*.JPG")
-                .output()
-                .expect("Failed to execute zip");
-            if !output.status.success() {
-                eprintln!("Failed to delete files from zip: {:?} {:?}", output.stdout, output.stderr);
-            }*/
+
             let add_cmd = format!("zip -rv {} ./*", last_zip_path.to_str().unwrap());
             let output = Command::new("bash")
                 .arg("-c")
@@ -92,18 +83,9 @@ pub(crate) fn capture() -> std::io::Result<Option<thread::JoinHandle<()>>>
             if !output.status.success() {
                 eprintln!("Error adding files: stdout: {}, stderr: {}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
             }
-            //exec_command(&add_cmd).unwrap();
-            /*let output = Command::new("zip")
-                .arg("-rv")
-                .arg(last_zip_path.to_str().unwrap())
-                .arg("/tmp/codlinux_ss/*")
-                .output()
-                .expect("Failed to execute zip");
-            if !output.status.success() {
-                eprintln!("Failed to delete files from zip: {:?} {:?}", output.stdout, output.stderr);
-            }*/
-            */
-            exec_command("rm -rf /tmp/codlinux_ss/*").unwrap();
+
+            exec_command("mkdir /tmp/codlinux_ss/old").unwrap();
+            exec_command("mv /tmp/codlinux_ss/* /tmp/codlinux_ss/old").unwrap();
         }
         else {
             eprintln!("No Moss zip files found to update");
