@@ -86,7 +86,11 @@ fn main()
 
     let assist_moss = utils::load_setting("assist_moss").unwrap_or_default();
     if &assist_moss == "yes" {
+        println!("yes");
         screenshooter::ASSIST_MOSS.store(true, Ordering::Relaxed);
+    }
+    if screenshooter::ASSIST_MOSS.load(Ordering::Relaxed) {
+        println!("ASSIST MOSS true");
     }
 
     let mut args: Vec<String> = std::env::args().skip(1).collect::<Vec<_>>();
@@ -104,7 +108,7 @@ fn main()
             if iw1x {
                 for exe in &executables {
                     if exe.to_lowercase().contains("iw1x.exe") {
-                        notify("Launching iw1x...", 2000).unwrap();
+                        notify("Launching iw1x...", 2000, false).unwrap();
                         capture().unwrap();
                         launch_game(&wineprefix, exe, &args_str).unwrap();
                         launched = true;
@@ -114,7 +118,7 @@ fn main()
             if t1x {
                 for exe in &executables {
                     if exe.to_lowercase().contains("t1x.exe") {
-                        notify("Launching t1x...", 2000).unwrap();
+                        notify("Launching t1x...", 2000, false).unwrap();
                         capture().unwrap();
                         launch_game(&wineprefix, exe, &args_str).unwrap();
                         launched = true;
@@ -139,7 +143,7 @@ fn main()
         let args_str = args.join(" ");
         let options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
-                .with_inner_size([400.0, 140.0 + 115.0 * executables.len() as f32]),
+                .with_inner_size([400.0, 145.0 + 115.0 * executables.len() as f32]),
             centered: true,
             ..Default::default()
         };
@@ -242,7 +246,7 @@ impl eframe::App for CoDLinuxApp
         if utils::DL_DONE.load(Ordering::Relaxed) {
             self.show_update_popup = false;
             self.downloading = false;
-            notify("Download Complete!", 10000).unwrap();
+            notify("Download Complete!", 10000, false).unwrap();
             std::process::exit(0);
         }
 
@@ -298,6 +302,9 @@ impl eframe::App for CoDLinuxApp
                         });
 
                         //*self.capture_thread.lock().unwrap() = Some(capture_handle);
+                        if screenshooter::ASSIST_MOSS.load(Ordering::Relaxed) {
+                            println!("ASSIST MOSS true");
+                        }
                         match capture_result {
                             Ok(Some(handle)) => {
                                 // Feature is enabled, store the thread handle for later use
@@ -335,14 +342,14 @@ impl eframe::App for CoDLinuxApp
                 let update_button = egui::Button::new(egui::RichText::new("Check For Updates").size(16.0));//.min_size(egui::vec2(300.0, 100.0));
                 if ui.add(update_button).clicked() {
                     let _ = thread::spawn(move || {
-                        notify("Checking for updates...", 3000).unwrap();
+                        notify("Checking for updates...", 3000, false).unwrap();
                         let check:bool = utils::check_update().unwrap();
                         if check {
                             utils::UPDATE_AVAILABLE.store(true, Ordering::Relaxed);
-                            notify("Update available!", 3000).unwrap();
+                            notify("Update available!", 3000, false).unwrap();
                         }
                         else {
-                            notify("No update available!", 3000).unwrap();
+                            notify("No update available!", 3000, false).unwrap();
                         }
                     });
                 }

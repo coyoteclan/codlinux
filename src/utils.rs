@@ -394,9 +394,15 @@ pub(crate) fn dl_update() -> std::io::Result<()>
     Ok(())
 }
 
-pub(crate) fn notify(message: &str, expire_time: u32) -> std::io::Result<()>
+pub(crate) fn notify(message: &str, expire_time: u32, transient: bool) -> std::io::Result<()>
 {
-    let cmd = format!(r#"notify-send --app-name=CoDLinux --icon=codlinux --expire-time {} "{}""#, expire_time, message);
+    let cmd = if transient {
+        format!(r#"notify-send --app-name=CoDLinux --icon=codlinux --transient --expire-time={} CoDLinux "{}""#, expire_time, message)
+    }
+    else {
+        format!(r#"notify-send --app-name=CoDLinux --icon=codlinux --expire-time={} CoDLinux "{}""#, expire_time, message)
+    };
+
     exec_command(&cmd).unwrap();
     Ok(())
 }

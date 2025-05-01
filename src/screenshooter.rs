@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::thread;
+use chrono::Utc;
 use std::path::Path;
 use std::time::Duration;
 use std::process::Command;
@@ -19,7 +20,7 @@ pub(crate) fn capture() -> std::io::Result<Option<thread::JoinHandle<()>>>
     if !ASSIST_MOSS.load(Ordering::Relaxed) {
         return Ok(None);
     }
-    if !moss_running()? {
+    /*if !moss_running()? {
         notify("Moss not running!", 6000).unwrap();
         return Ok(None);
     }
@@ -27,22 +28,35 @@ pub(crate) fn capture() -> std::io::Result<Option<thread::JoinHandle<()>>>
     if !moss_capturing()? {
         notify("Moss not capturing!", 6000).unwrap();
         return Ok(None);
-    }
+    }*/
 
     println!("Starting screenshot capture process");
     exec_command("rm -rf /tmp/codlinux_ss/*").unwrap();
 
     println!("creating thread");
     let handle = thread::spawn(move || {
+        while !moss_running().unwrap() {
+            notify("Open Moss!", 3000, true).unwrap();
+            thread::sleep(Duration::from_secs(3));
+        }
+        while !moss_capturing().unwrap() {
+            notify("Start capture in Moss", 3000, true).unwrap();
+            thread::sleep(Duration::from_secs(3));
+        }
+
         let tmp_dir = Path::new("/tmp/codlinux_ss");
         if !tmp_dir.exists() {
             fs::create_dir(tmp_dir).unwrap();
         }
         thread::sleep(Duration::from_secs(5)); // wait for the game to open
-        
+
         let mut count = 1;
+        let mut last_ss_time = Utc::now();
         while moss_capturing().unwrap()
         {
+            if Utc::now() - last_ss_time < chrono::Duration::seconds(60) {
+                continue;
+            }
             let ss_path = tmp_dir.join(format!("{:03}.JPG", count));
             println!("Capturing screenshot to {}", ss_path.to_str().unwrap());
             let output = Command::new("scrot")
@@ -54,9 +68,14 @@ pub(crate) fn capture() -> std::io::Result<Option<thread::JoinHandle<()>>>
                 eprintln!("Failed to capture screenshot: {:?}", output.stderr);
             }
             count += 1;
-            thread::sleep(Duration::from_secs(60));
+            last_ss_time = Utc::now();
+            thread::sleep(Duration::from_secs(3));
         }
-        thread::sleep(Duration::from_secs(6)); // make sure moss has finished
+        // make sure moss has finished
+        while moss_running().unwrap() {
+            notify("Close Moss!", 2000, true).unwrap();
+            thread::sleep(Duration::from_secs(3));
+        }
         
         let path_ = format!("{}/Desktop/MOSS", std::env::var("HOME").unwrap());
         let moss_dir = Path::new(&path_);
@@ -85,7 +104,7 @@ pub(crate) fn capture() -> std::io::Result<Option<thread::JoinHandle<()>>>
             }
 
             exec_command("mkdir /tmp/codlinux_ss/old").unwrap();
-            exec_command("mv /tmp/codlinux_ss/* /tmp/codlinux_ss/old").unwrap();
+            exec_command("mv /tmp/codlinux_ss/*.JPG /tmp/codlinux_ss/old").unwrap();
         }
         else {
             eprintln!("No Moss zip files found to update");
