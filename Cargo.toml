@@ -7,6 +7,7 @@ edition = "2024"
 chrono = "0.4.40"
 compile-time = "0.2.0"
 eframe = "0.31.1"
+rdev = "0.5.3"
 sysinfo = "0.34.2"
 
 [profile.release]

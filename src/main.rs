@@ -13,10 +13,6 @@ use screenshooter::capture;
 fn main()
 {
     println!("CoDLinux v{}", &VERSION);
-    //utils::DL_STARTED.store(false, Ordering::Relaxed);
-    //utils::DL_DONE.store(false, Ordering::Relaxed);
-    //utils::UPDATE_AVAILABLE.store(false, Ordering::Relaxed);
-    //screenshooter::ASSIST_MOSS.store(false, Ordering::Relaxed);
 
     let resolution = utils::get_display_mode();
     if let Some((width, height, rate)) = resolution {
@@ -89,9 +85,32 @@ fn main()
         println!("yes");
         screenshooter::ASSIST_MOSS.store(true, Ordering::Relaxed);
     }
-    if screenshooter::ASSIST_MOSS.load(Ordering::Relaxed) {
-        println!("ASSIST MOSS true");
+
+    let capture_thread = Arc::new(Mutex::new(None::<thread::JoinHandle<()>>));
+    let capture_result = capture();
+    match capture_result {
+        Ok(Some(handle)) => {
+            *capture_thread.lock().unwrap() = Some(handle);
+        }
+        Ok(None) => {
+            println!("ASSIST_MOSS is disabled, skipping screenshot capture.");
+        }
+        Err(e) => {
+            eprintln!("Failed to start capture: {}", e);
+        }
     }
+
+    let keyboard_handle = thread::spawn(move || {
+        if let Err(e) = rdev::listen(|event| {
+            if event.event_type == rdev::EventType::KeyPress(rdev::Key::KpMinus) {
+                let current = screenshooter::CAPTURE.load(Ordering::Relaxed);
+                screenshooter::CAPTURE.store(!current, Ordering::Relaxed);
+                println!("Capture toggled to: {}", !current);
+            }
+        }) {
+            eprintln!("Failed to listen for keyboard events: {:?}", e);
+        }
+    });
 
     let mut args: Vec<String> = std::env::args().skip(1).collect::<Vec<_>>();
     if let Some(first_arg) = args.get(0) {
@@ -109,7 +128,6 @@ fn main()
                 for exe in &executables {
                     if exe.to_lowercase().contains("iw1x.exe") {
                         notify("Launching iw1x...", 2000, false).unwrap();
-                        capture().unwrap();
                         launch_game(&wineprefix, exe, &args_str).unwrap();
                         launched = true;
                     }
@@ -119,7 +137,6 @@ fn main()
                 for exe in &executables {
                     if exe.to_lowercase().contains("t1x.exe") {
                         notify("Launching t1x...", 2000, false).unwrap();
-                        capture().unwrap();
                         launch_game(&wineprefix, exe, &args_str).unwrap();
                         launched = true;
                     }
@@ -133,7 +150,6 @@ fn main()
         //let saved_game = utils::recall_game().unwrap();
         let saved_game = utils::load_setting("remembered_game").unwrap();
         if &saved_game != "" {
-            capture().unwrap();
             launch_game(&wineprefix, &saved_game, &args_str).unwrap();
             launched = true;
         }
@@ -149,12 +165,10 @@ fn main()
         };
         println!("executables: {:.2}", executables.len() as f32);
 
-        // Create a shared thread handle
-        let capture_thread = Arc::new(Mutex::new(None::<thread::JoinHandle<()>>));
         let game_thread = Arc::new(Mutex::new(None::<thread::JoinHandle<()>>));
         let dl_thread = Arc::new(Mutex::new(None::<thread::JoinHandle<()>>));
         let dl_size = utils::get_download_size();
-        let app = CoDLinuxApp::new(executables.clone(), args_str.clone(), uo, game_thread.clone(), dl_thread.clone(), wineprefix.clone(), dl_size, screenshooter::ASSIST_MOSS.load(Ordering::Relaxed), capture_thread.clone());
+        let app = CoDLinuxApp::new(executables.clone(), args_str.clone(), uo, game_thread.clone(), dl_thread.clone(), wineprefix.clone(), dl_size, screenshooter::ASSIST_MOSS.load(Ordering::Relaxed));
 
         eframe::run_native(
             "CoDLinux",
@@ -163,9 +177,6 @@ fn main()
         ).unwrap();
 
         // Join the game thread after GUI closes
-        if let Some(handle) = capture_thread.lock().unwrap().take() {
-            handle.join().unwrap();
-        }
         if let Some(handle) = game_thread.lock().unwrap().take() {
             handle.join().unwrap();
         }
@@ -174,6 +185,11 @@ fn main()
         }
         println!("CoDLinux: GUI closed.");
     }
+
+    if let Some(handle) = capture_thread.lock().unwrap().take() {
+        handle.join().unwrap();
+    }
+    keyboard_handle.join().unwrap();
 }
 
 pub struct CoDLinuxApp
@@ -189,12 +205,11 @@ pub struct CoDLinuxApp
     downloading: bool,
     dl_size: String,
     assist_moss: bool,
-    capture_thread: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
 }
 
 impl CoDLinuxApp
 {
-    fn new(executables: Vec<String>, args: String, uo: bool, game_thread: Arc<Mutex<Option<thread::JoinHandle<()>>>>, dl_thread: Arc<Mutex<Option<thread::JoinHandle<()>>>>, wine_prefix: String, dl_size: String, assist_moss: bool, capture_thread: Arc<Mutex<Option<thread::JoinHandle<()>>>>) -> Self {
+    fn new(executables: Vec<String>, args: String, uo: bool, game_thread: Arc<Mutex<Option<thread::JoinHandle<()>>>>, dl_thread: Arc<Mutex<Option<thread::JoinHandle<()>>>>, wine_prefix: String, dl_size: String, assist_moss: bool) -> Self {
         println!("CoDLinux: Creating app...");
         println!("CoDLinux: Prefix: {:?}", wine_prefix);
         CoDLinuxApp {
@@ -209,7 +224,6 @@ impl CoDLinuxApp
             downloading: false,
             dl_size,
             assist_moss,
-            capture_thread,//: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -278,21 +292,9 @@ impl eframe::App for CoDLinuxApp
                         }
                         let exe = executable.clone();
                         let args = self.args.clone();
-                        
-                        let capture_result = capture();
-                        
-                        /*let capture_handle = match capture_result {
-                            Ok(handle) => handle,
-                            Err(e) => {
-                                eprintln!("Failed to start capture: {}", e);
-                                return; // Exit early if capture setup fails
-                            }
-                        };*/
 
                         let wine_prefix = self.wine_prefix.clone();
                         let game_handle = thread::spawn(move || {
-                            //let _ = utils::save_wine_prefix(&wine_prefix);
-                            //let rrr = utils::save_wine_prefix(&wine_prefix);
                             let rrr = utils::save_setting("wine_prefix", &wine_prefix);
                             if rrr.is_err() {
                                 println!("CoDLinux: Error saving wine prefix: {}", rrr.unwrap_err());
@@ -300,25 +302,6 @@ impl eframe::App for CoDLinuxApp
                             println!("CoDLinux: prefix: {}", &wine_prefix);
                             let _ = launch_game(&wine_prefix, &exe, &args);
                         });
-
-                        //*self.capture_thread.lock().unwrap() = Some(capture_handle);
-                        if screenshooter::ASSIST_MOSS.load(Ordering::Relaxed) {
-                            println!("ASSIST MOSS true");
-                        }
-                        match capture_result {
-                            Ok(Some(handle)) => {
-                                // Feature is enabled, store the thread handle for later use
-                                *self.capture_thread.lock().unwrap() = Some(handle);
-                            }
-                            Ok(None) => {
-                                // Feature is disabled, no action needed
-                                println!("ASSIST_MOSS is disabled, skipping screenshot capture.");
-                            }
-                            Err(e) => {
-                                eprintln!("Failed to start capture: {}", e);
-                                // Handle the error as needed (e.g., show a message or proceed without capture)
-                            }
-                        }
                         *self.game_thread.lock().unwrap() = Some(game_handle);
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }

@@ -333,7 +333,7 @@ pub(crate) fn check_update() -> Result<bool, Box<dyn std::error::Error>>
     let compile_time = get_compile_time()?;
     let difference = release_date - compile_time;
     //println!("difference: {}", difference.to_string());
-    Ok(difference > chrono::Duration::hours(1))
+    Ok(difference > chrono::Duration::minutes(10))
 }
 
 pub(crate) fn dl_update() -> std::io::Result<()>
@@ -407,6 +407,22 @@ pub(crate) fn notify(message: &str, expire_time: u32, transient: bool) -> std::i
     Ok(())
 }
 
+pub(crate) fn last_moss_file() -> std::io::Result<std::path::PathBuf>
+{
+    let path_ = format!("{}/Desktop/MOSS", std::env::var("HOME").unwrap());
+    let moss_dir = Path::new(&path_);
+
+    let mut zip_files: Vec<_> = fs::read_dir(moss_dir).unwrap()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().extension().map_or(false, |ext| ext == "zip"))
+        .collect();
+    
+    zip_files.sort_by_key(|entry| entry.metadata().unwrap().modified().unwrap());
+    let last = zip_files.last().expect("REASON").path();
+
+    Ok(last)
+}
+
 pub(crate) fn moss_running() -> std::io::Result<bool>
 {
     let s = System::new_all();
@@ -420,7 +436,7 @@ pub(crate) fn moss_running() -> std::io::Result<bool>
     Ok(true)
 }
 
-pub(crate) fn moss_capturing() -> std::io::Result<bool>
+/*pub(crate) fn moss_capturing() -> std::io::Result<bool>
 {
     let s = System::new_all();
     let p = s.processes_by_name("oss".as_ref());
@@ -435,4 +451,4 @@ pub(crate) fn moss_capturing() -> std::io::Result<bool>
     }
 
     Ok(true)
-}
+}*/
