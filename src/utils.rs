@@ -16,7 +16,6 @@ use std::path::Path;
 use std::io::Write;
 use std::collections::HashMap;
 use chrono::{DateTime, Utc};
-use sysinfo::System;
 
 pub(crate) fn get_executables() -> Vec<String>
 {
@@ -406,49 +405,3 @@ pub(crate) fn notify(message: &str, expire_time: u32, transient: bool) -> std::i
     exec_command(&cmd).unwrap();
     Ok(())
 }
-
-pub(crate) fn last_moss_file() -> std::io::Result<std::path::PathBuf>
-{
-    let path_ = format!("{}/Desktop/MOSS", std::env::var("HOME").unwrap());
-    let moss_dir = Path::new(&path_);
-
-    let mut zip_files: Vec<_> = fs::read_dir(moss_dir).unwrap()
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| entry.path().extension().map_or(false, |ext| ext == "zip"))
-        .collect();
-    
-    zip_files.sort_by_key(|entry| entry.metadata().unwrap().modified().unwrap());
-    let last = zip_files.last().expect("REASON").path();
-
-    Ok(last)
-}
-
-pub(crate) fn moss_running() -> std::io::Result<bool>
-{
-    let s = System::new_all();
-    let p = s.processes_by_name("oss".as_ref());
-    let i: u32 = p.count() as u32;
-    
-    if i == 0 {
-        return Ok(false);
-    }
-
-    Ok(true)
-}
-
-/*pub(crate) fn moss_capturing() -> std::io::Result<bool>
-{
-    let s = System::new_all();
-    let p = s.processes_by_name("oss".as_ref());
-    for process in System::new_all().processes_by_name("oss".as_ref()) {
-        println!("------------------------------------");
-        println!("process name: {:?}", process.name());
-    }
-    let i: u32 = p.count() as u32;
-    
-    if i != 5 {
-        return Ok(false);
-    }
-
-    Ok(true)
-}*/

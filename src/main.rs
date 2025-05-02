@@ -1,14 +1,12 @@
 static VERSION: &str = env!("CARGO_PKG_VERSION");
 
 mod utils;
-mod screenshooter;
 
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use eframe::egui;
 use utils::{create_desktop_file, my_exe_path, get_fancy_name, reg_uri_scheme, launch_game, notify};
-use screenshooter::capture;
 
 fn main()
 {
@@ -80,38 +78,6 @@ fn main()
         wineprefix = backupprefix;
     }
 
-    let assist_moss = utils::load_setting("assist_moss").unwrap_or_default();
-    if &assist_moss == "yes" {
-        println!("yes");
-        screenshooter::ASSIST_MOSS.store(true, Ordering::Relaxed);
-    }
-
-    let capture_thread = Arc::new(Mutex::new(None::<thread::JoinHandle<()>>));
-    let capture_result = capture();
-    match capture_result {
-        Ok(Some(handle)) => {
-            *capture_thread.lock().unwrap() = Some(handle);
-        }
-        Ok(None) => {
-            println!("ASSIST_MOSS is disabled, skipping screenshot capture.");
-        }
-        Err(e) => {
-            eprintln!("Failed to start capture: {}", e);
-        }
-    }
-
-    let keyboard_handle = thread::spawn(move || {
-        if let Err(e) = rdev::listen(|event| {
-            if event.event_type == rdev::EventType::KeyPress(rdev::Key::KpMinus) {
-                let current = screenshooter::CAPTURE.load(Ordering::Relaxed);
-                screenshooter::CAPTURE.store(!current, Ordering::Relaxed);
-                println!("Capture toggled to: {}", !current);
-            }
-        }) {
-            eprintln!("Failed to listen for keyboard events: {:?}", e);
-        }
-    });
-
     let mut args: Vec<String> = std::env::args().skip(1).collect::<Vec<_>>();
     if let Some(first_arg) = args.get(0) {
         if first_arg.starts_with("iw1x://") || first_arg.starts_with("t1x://") {
@@ -159,7 +125,7 @@ fn main()
         let args_str = args.join(" ");
         let options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
-                .with_inner_size([400.0, 145.0 + 115.0 * executables.len() as f32]),
+                .with_inner_size([400.0, 140.0 + 115.0 * executables.len() as f32]),
             centered: true,
             ..Default::default()
         };
@@ -168,7 +134,7 @@ fn main()
         let game_thread = Arc::new(Mutex::new(None::<thread::JoinHandle<()>>));
         let dl_thread = Arc::new(Mutex::new(None::<thread::JoinHandle<()>>));
         let dl_size = utils::get_download_size();
-        let app = CoDLinuxApp::new(executables.clone(), args_str.clone(), uo, game_thread.clone(), dl_thread.clone(), wineprefix.clone(), dl_size, screenshooter::ASSIST_MOSS.load(Ordering::Relaxed));
+        let app = CoDLinuxApp::new(executables.clone(), args_str.clone(), uo, game_thread.clone(), dl_thread.clone(), wineprefix.clone(), dl_size);
 
         eframe::run_native(
             "CoDLinux",
@@ -185,11 +151,6 @@ fn main()
         }
         println!("CoDLinux: GUI closed.");
     }
-
-    if let Some(handle) = capture_thread.lock().unwrap().take() {
-        handle.join().unwrap();
-    }
-    keyboard_handle.join().unwrap();
 }
 
 pub struct CoDLinuxApp
@@ -204,12 +165,11 @@ pub struct CoDLinuxApp
     show_update_popup: bool,
     downloading: bool,
     dl_size: String,
-    assist_moss: bool,
 }
 
 impl CoDLinuxApp
 {
-    fn new(executables: Vec<String>, args: String, uo: bool, game_thread: Arc<Mutex<Option<thread::JoinHandle<()>>>>, dl_thread: Arc<Mutex<Option<thread::JoinHandle<()>>>>, wine_prefix: String, dl_size: String, assist_moss: bool) -> Self {
+    fn new(executables: Vec<String>, args: String, uo: bool, game_thread: Arc<Mutex<Option<thread::JoinHandle<()>>>>, dl_thread: Arc<Mutex<Option<thread::JoinHandle<()>>>>, wine_prefix: String, dl_size: String) -> Self {
         println!("CoDLinux: Creating app...");
         println!("CoDLinux: Prefix: {:?}", wine_prefix);
         CoDLinuxApp {
@@ -223,7 +183,6 @@ impl CoDLinuxApp
             show_update_popup: false,
             downloading: false,
             dl_size,
-            assist_moss,
         }
     }
 }
@@ -283,13 +242,6 @@ impl eframe::App for CoDLinuxApp
                             //let _ = utils::remember_game(&executable);
                             let _ = utils::save_setting("remembered_game", &executable);
                         }
-                        if self.assist_moss {
-                            screenshooter::ASSIST_MOSS.store(true, Ordering::Relaxed);
-                            let _ = utils::save_setting("assist_moss", "yes");
-                        }
-                        else {
-                            let _ = utils::save_setting("assist_moss", "no");
-                        }
                         let exe = executable.clone();
                         let args = self.args.clone();
 
@@ -310,7 +262,6 @@ impl eframe::App for CoDLinuxApp
                 ui.heading("Options");
 
                 ui.checkbox(&mut self.remember, "Remember my choice");
-                ui.checkbox(&mut self.assist_moss, "Assist Moss");
                 let text_edit = ui.add(egui::TextEdit::singleline(&mut self.wine_prefix)
                     .hint_text("Wine Prefix")
                     .desired_width(200.0));
