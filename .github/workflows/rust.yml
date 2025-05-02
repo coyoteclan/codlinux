@@ -18,6 +18,11 @@ jobs:
 
       - name: Cache Cargo Dependencies
         uses: Swatinem/rust-cache@v2
+      
+      - name: Install Dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y pkg-config
 
       - name: Build Release
         run: cargo build --release
