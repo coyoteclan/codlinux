@@ -6,6 +6,7 @@ To run the games, you need a script. But using scripts is a little inconvenient.
 - You can remove the remembered game from ``codlinux_conf/codlinux.cfg``. For example,
   ![Screenshot_2025-04-21_16-41-01](https://github.com/user-attachments/assets/144e615d-1fc0-484e-8730-213c59df2699)
 - You can only check for updates 60 times per hour
+- Press **ESC** if "More Options" menu doesn't close. This is a gtk4 issue.
 
 ## Todo
 - Add an option to create a launcher of individual games

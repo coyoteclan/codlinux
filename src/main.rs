@@ -6,7 +6,7 @@ use relm4::{
     factory::{DynamicIndex, FactoryComponent, FactorySender, FactoryVecDeque}, gtk, Component, ComponentParts, ComponentSender, RelmApp, RelmWidgetExt, Worker, WorkerController
 };
 use gtk::Orientation;
-use gtk::prelude::{BoxExt, ButtonExt, CheckButtonExt, GtkWindowExt, OrientableExt, WidgetExt, PopoverExt, GridExt, EditableExt};
+use gtk::prelude::{BoxExt, ButtonExt, GtkWindowExt, OrientableExt, WidgetExt, PopoverExt, GridExt, EditableExt};
 use util::my_exe_path;
 
 mod util;
@@ -220,9 +220,9 @@ impl FactoryComponent for GameInfo {
                                 },
                             },
 
-                            gtk::CheckButton {
-                                set_label: Some("Remember Game"),
-                                connect_activate[sender, index] => move |_| {
+                            gtk::Button {
+                                set_label: "Remember Game",
+                                connect_clicked[sender, index] => move |_| {
                                     sender.output(GameOutput::Remembered(index.clone())).unwrap();
                                 },
                             },
