@@ -22,7 +22,7 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt update
-          sudo apt install -y pkg-config libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+          sudo apt install -y libgtk-4-dev build-essential pkg-config libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
           libxkbcommon-dev libssl-dev
 
       - name: Build Release
