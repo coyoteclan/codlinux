@@ -1,23 +1,552 @@
 static VERSION: &str = env!("CARGO_PKG_VERSION");
 
-mod utils;
+static GNAME_STYLE: &str = "font-family=\"Ubuntu\" font-weight=\"bold\" font-size=\"xx-large\"";
 
-use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
-use std::thread;
-use eframe::egui;
-use utils::{create_desktop_file, my_exe_path, get_fancy_name, reg_uri_scheme, launch_game, notify};
+use relm4::{
+    factory::{DynamicIndex, FactoryComponent, FactorySender, FactoryVecDeque}, gtk, Component, ComponentParts, ComponentSender, RelmApp, RelmWidgetExt, Worker, WorkerController
+};
+use gtk::Orientation;
+use gtk::prelude::{BoxExt, ButtonExt, CheckButtonExt, GtkWindowExt, OrientableExt, WidgetExt, PopoverExt, GridExt, EditableExt};
+use util::my_exe_path;
 
-fn main()
+mod util;
+mod updater;
+
+use std::{io, env, fs::create_dir_all, path::PathBuf, collections::BTreeMap};
+
+//use relm4_icons_build;
+//use relm4_icons;
+
+//mod icon_names {
+//    include!(concat!(env!("OUT_DIR"), "/icon_names.rs"));
+//}
+
+
+// Structs & Enums
+#[derive(Debug, Clone)]
+struct GameInfo {
+    name: String,
+    version: String,
+    path: PathBuf,
+    wineprefix: String,
+    envars: String,
+    args: String,
+}
+
+#[derive(Debug, Clone)]
+enum GameMsg {}
+
+#[derive(Debug)]
+enum GameOutput {
+    Launched(DynamicIndex),
+    Removed(DynamicIndex),
+    Edited(DynamicIndex, String, String, String),
+    Remembered(DynamicIndex),
+}
+
+struct App {
+    games: FactoryVecDeque<GameInfo>,
+    scanner: WorkerController<Scanner>,
+    launcher: WorkerController<GameLauncher>,
+}
+
+#[derive(Debug)]
+enum AppMsg {
+    AddGames(Vec<GameInfo>),
+    AddGame,
+    RefreshGames,
+    RemoveGame(DynamicIndex),
+    LaunchGame(DynamicIndex),
+    ExitGame,
+    UpdateGame(DynamicIndex, String, String, String),
+    ShowUpdater,
+    RememberGame(DynamicIndex),
+}
+
+struct Scanner;
+
+impl Worker for Scanner {
+    type Init = ();
+    type Input = ();
+    type Output = Vec<GameInfo>;
+
+    fn init(_: (), _sender: ComponentSender<Self>) -> Self { Scanner }
+
+    fn update(&mut self, _: (), sender: ComponentSender<Self>)
+    {
+        let games = scan_games().unwrap_or_default();
+        sender.output(games).unwrap();
+    }
+}
+
+struct GameLauncher;
+
+impl Worker for GameLauncher {
+    type Init = ();
+    type Input = GameInfo;
+    type Output = ();
+
+    fn init(_: (), _sender: ComponentSender<Self>) -> Self { GameLauncher }
+
+    fn update(&mut self, game: Self::Input, sender: ComponentSender<Self>)
+    {
+        // ChatGPT
+        // run in a `catch_unwind` so we never let a panic escape
+        // prevents the case where the app keeps running in background if game process exits with an error
+        let result = std::panic::catch_unwind(|| {
+            if let Err(err) = util::launch_game(&game) {
+                eprintln!("⚠️ Game launch failed for `{}`: {}", game.name, err);
+            }
+        });
+
+        if result.is_err() {
+            eprintln!("⚠️ Panic while launching `{}`", game.name);
+        }
+
+        // and *always* let App know we're done
+        sender.output(()).expect("Failed to send ExitGame");
+    }
+}
+
+#[relm4::factory]
+impl FactoryComponent for GameInfo {
+    type Init = GameInfo;
+    type Input = GameMsg;
+    type Output = GameOutput;
+    type CommandOutput = ();
+    type ParentWidget = gtk::Box;
+
+    view! {
+        root = gtk::Box {
+            set_orientation: Orientation::Horizontal,
+            set_spacing: 6,
+            set_align: gtk::Align::Center,
+
+            gtk::Button {
+                connect_clicked[sender, index] => move |_| {
+                    sender.output(GameOutput::Launched(index.clone())).unwrap();
+                },
+                set_size_request: (300, 150),
+
+                gtk::Box {
+                    set_orientation: Orientation::Vertical,
+                    set_expand: false,
+                    //set_align: gtk::Align::Center,
+
+                    gtk::Box {
+                        set_orientation: Orientation::Horizontal,
+                        set_expand: true,
+                        set_align: gtk::Align::Center,
+
+                        gtk::Label {
+                            set_markup: &format!("<span {}>{}</span>", GNAME_STYLE, &self.name),
+                        },
+                    },
+
+                    gtk::Box {
+                        set_orientation: Orientation::Horizontal,
+                        set_expand: false,
+                        set_align: gtk::Align::End,
+
+                        gtk::Label {
+                            set_text: &format!("v{}", self.version),
+                        }
+                    }
+                },
+            },
+
+            gtk::Box {
+                set_orientation: Orientation::Vertical,
+                set_spacing: 5,
+                set_expand: false,
+                set_align: gtk::Align::Start,
+
+                gtk::Button {
+                    set_icon_name: "list-remove",
+                    connect_clicked[sender, index] => move |_| {
+                        sender.output(GameOutput::Removed(index.clone())).unwrap();
+                    },
+                    set_size_request: (32,32)
+                },
+
+                gtk::MenuButton {
+                    set_icon_name: "document-edit",
+                    set_direction: gtk::ArrowType::Right,
+
+                    #[wrap(Some)]
+                    set_popover: popover = &gtk::Popover {
+                        set_position: gtk::PositionType::Right,
+                        set_autohide: true,
+
+                        gtk::Box {
+                            set_orientation: Orientation::Vertical,
+                            set_spacing: 6,
+
+                            gtk::Grid {
+                                set_row_spacing: 6,
+                                set_column_spacing: 12,
+                                set_margin_all: 12,
+                                set_column_homogeneous: false,
+                                set_row_homogeneous: false,
+
+                                attach[0,0,1,1] = &gtk::Label {
+                                    set_markup: "<b>Wine Prefix</b>",
+                                    set_halign: gtk::Align::Start,
+                                },
+                                #[name = "wine_prefix_entry"]
+                                attach[1, 0, 1, 1] = &gtk::Entry {
+                                    set_text: &self.wineprefix,
+                                    set_hexpand: true,
+                                },
+
+                                attach[0, 1, 1, 1] = &gtk::Label {
+                                    set_markup: "<b>Env Vars</b>",
+                                    set_halign: gtk::Align::Start,
+                                },
+                                #[name = "envars_entry"]
+                                attach[1, 1, 1, 1] = &gtk::Entry {
+                                    set_text: &self.envars,
+                                    set_hexpand: true,
+                                },
+
+                                attach[0, 2, 1, 1] = &gtk::Label {
+                                    set_markup: "<b>Args</b>",
+                                    set_halign: gtk::Align::Start,
+                                },
+                                #[name = "args_entry"]
+                                attach[1, 2, 1, 1] = &gtk::Entry {
+                                    set_text: &self.args,
+                                    set_hexpand: true,
+                                },
+                            },
+
+                            gtk::CheckButton {
+                                set_label: Some("Remember Game"),
+                                connect_activate[sender, index] => move |_| {
+                                    sender.output(GameOutput::Remembered(index.clone())).unwrap();
+                                },
+                            },
+
+                            gtk::Button {
+                                set_label: "Save",
+                                connect_clicked[sender, index, wine_prefix_entry, envars_entry, args_entry, popover] => move |_| {
+                                    let wp = wine_prefix_entry.text().trim().to_string();
+                                    let ev = envars_entry.text().trim().to_string();
+                                    let ag = args_entry.text().trim().to_string();
+                                    sender.output(GameOutput::Edited(index.clone(), wp, ev, ag)).unwrap();
+
+                                    popover.popdown();
+                                }
+                            }
+                        },
+                    }
+                },
+            },
+        }
+    }
+
+    fn init_model(info: Self::Init, _index: &DynamicIndex, _sender: FactorySender<Self>) -> GameInfo
+    {
+        info
+    }
+}
+
+#[relm4::component]
+impl Component for App {
+    type Init = Vec<GameInfo>;
+    type Input = AppMsg;
+    type Output = ();
+    type CommandOutput = ();
+
+    view! {
+        gtk::Window {
+            set_title: Some("CoDLinux"),
+            set_default_size: (400, 300),
+
+            gtk::Box {
+                set_orientation: Orientation::Vertical,
+                set_spacing: 5,
+                set_margin_all: 8,
+
+                gtk::Box {
+                    set_orientation: Orientation::Horizontal,
+                    set_align: gtk::Align::End,
+                    set_spacing: 5,
+
+                    gtk::Button {
+                        set_icon_name: "view-refresh",
+                        set_expand: false,
+                        connect_clicked => AppMsg::RefreshGames,
+                    },
+
+                    gtk::MenuButton {
+                        set_icon_name: "view-more",
+                        set_direction: gtk::ArrowType::Down,
+
+                        #[wrap(Some)]
+                        set_popover: more_popover = &gtk::Popover {
+                            set_position: gtk::PositionType::Bottom,
+                            set_autohide: true,
+                            set_cascade_popdown: false,
+
+                            gtk::Box {
+                                set_orientation: Orientation::Vertical,
+                                set_spacing: 5,
+
+                                gtk::Button {
+                                    set_label: "Add Dummy Game",
+                                    connect_clicked => AppMsg::AddGame,
+                                },
+                                gtk::Button {
+                                    set_label: "Check for Updates",
+                                    connect_clicked[sender, more_popover] => move |_| {
+                                        more_popover.popdown();
+                                        sender.input(AppMsg::ShowUpdater);
+                                    },
+                                },
+                                gtk::MenuButton {
+                                    set_label: "About",
+                                    set_direction: gtk::ArrowType::Right,
+
+                                    #[wrap(Some)]
+                                    set_popover: about_popover = &gtk::Popover {
+                                        set_position: gtk::PositionType::Right,
+
+                                        gtk::Box {
+                                            set_orientation: Orientation::Vertical,
+                                            set_width_request: 200,
+                                            //set_height_request: 200,
+                                            set_align: gtk::Align::Center,
+                                            set_spacing: 6,
+                                            set_margin_all: 4,
+
+                                            gtk::Image {
+                                                set_icon_name: Some("codlinux"),
+                                                set_icon_size: gtk::IconSize::Large,
+                                            },
+                                            gtk::Label {
+                                                set_markup: &format!("<b>CoDLinux v{}</b>", &VERSION)
+                                            },
+                                            gtk::Label {
+                                                set_text: "CoD 1/UO client helper"
+                                            },
+                                            gtk::Label {
+                                                set_markup: "<a href=\"https://github.com/coyoteclan/codlinux\">Repo</a> | <a href=\"https://discord.gg/kSrXbj9shh\">Discord</a>"
+                                            },
+                                            gtk::Label {
+                                                set_markup: "<small>© 2025 Kazam</small>"
+                                            },
+                                            gtk::Label {
+                                                set_markup: "<small>This program comes with absolutely no warranty.</small>"
+                                            },
+                                            gtk::Label {
+                                                set_markup: "<small>See the <a href=\"https://www.gnu.org/licenses/gpl-3.0.html#license-text\">GNU General Public License, version 3 or later</a> for details.</small>"
+                                            }
+                                        }
+                                    }
+                                },
+
+                                gtk::Button {
+                                    set_label: "Close",
+                                    connect_clicked[more_popover] => move |_| {
+                                        more_popover.popdown();
+                                    }
+                                }
+                            }
+                        }
+                    },
+                },
+
+                #[local_ref]
+                games_box -> gtk::Box {
+                    set_orientation: Orientation::Vertical,
+                    set_spacing: 5,
+                },
+            }
+        }
+    }
+
+    fn init(games_list: Self::Init, root: Self::Root, sender: ComponentSender<Self>) -> ComponentParts<Self>
+    {
+        let games = FactoryVecDeque::builder()
+        .launch_default()
+        .forward(sender.input_sender(), |msg| match msg {
+            GameOutput::Launched(index) => AppMsg::LaunchGame(index),
+            GameOutput::Removed(index) => AppMsg::RemoveGame(index),
+            GameOutput::Edited(index, wp, ev, ag) => AppMsg::UpdateGame(index, wp, ev, ag),
+            GameOutput::Remembered(index) => AppMsg::RememberGame(index),
+        });
+
+        let scanner = Scanner::builder()
+            .detach_worker(())
+            .forward(sender.input_sender(), AppMsg::AddGames);
+
+        let launcher = GameLauncher::builder()
+            .detach_worker(())
+            .forward(sender.input_sender(), |_| AppMsg::ExitGame);
+
+        let model = App { games, scanner, launcher };
+        let games_box = model.games.widget();
+        let widgets = view_output!();
+
+        sender.input_sender().send(AppMsg::AddGames(games_list)).unwrap();
+
+        ComponentParts { model, widgets }
+    }
+
+    fn update(&mut self, msg: Self::Input, _sender: ComponentSender<Self>, root: &Self::Root)
+    {
+        let mut games_guard = self.games.guard();
+        match msg {
+            AppMsg::AddGames(list) => {
+                for game in list {
+                    games_guard.push_back(game);
+                }
+            }
+            AppMsg::AddGame => {
+                games_guard.push_back(GameInfo {
+                    name: "Dummy Game".to_string(),
+                    version: "1.0".to_string(),
+                    path: std::path::PathBuf::from("/path/to/game"),
+                    wineprefix: String::new(),
+                    envars: String::new(),
+                    args: String::new(),
+                });
+            }
+            AppMsg::RefreshGames => {
+                games_guard.clear();
+                self.scanner.emit(());
+            }
+            AppMsg::RemoveGame(index) => {
+                let _ = games_guard.remove(index.current_index());
+            }
+            AppMsg::LaunchGame(index) => {
+                println!("Launch: {:?}", index);
+                let game = games_guard.get(index.current_index()).unwrap();
+
+                println!("{:#?}", game);
+                if &game.name == "Dummy Game" { return; }
+
+                root.set_visible(false);
+                self.launcher.emit(game.clone());
+                //util::launch_game(game).unwrap();
+                //root.set_visible(true);
+            }
+            AppMsg::ExitGame => {
+                root.set_visible(true);
+            }
+            AppMsg::UpdateGame(index, wp, ev, ag) => {
+                if let Some(game) = games_guard.get_mut(index.current_index()) {
+                    game.wineprefix = wp;
+                    game.envars = ev;
+                    game.args = ag;
+
+                    let mut game_config: BTreeMap<String, String> = BTreeMap::new();
+                    game_config.insert("wine_prefix".to_string(), game.wineprefix.clone());
+                    game_config.insert("envars".to_string(), game.envars.clone());
+                    game_config.insert("args".to_string(), game.args.clone());
+                    util::save_game_config(&game.name, &game_config).unwrap();
+                }
+            }
+            AppMsg::ShowUpdater => {
+                updater::show_update_window(root.application().unwrap());
+            }
+            AppMsg::RememberGame(index) => {
+                if let Some(game) = games_guard.get_mut(index.current_index()) {
+                    util::save_setting("saved_game", &game.name).unwrap();
+                }
+            }
+        }
+
+        /*if util::GAME_RUNNING.load(Ordering::Relaxed) {
+            root.set_visible(false);
+        }
+        else {
+            root.set_visible(true);
+        }*/
+    }
+}
+
+fn load_game_settings(mut game: GameInfo) -> io::Result<GameInfo>
+{
+    let cfg_file = util::my_exe_path().unwrap().join(format!("codlinux_conf/{}.cfg", &game.name));
+    if cfg_file.exists() {
+        let cfg = util::get_game_config(&game.name).unwrap();
+        game.wineprefix = if let Some(wp) = cfg.get("wine_prefix") {
+            wp.to_string()
+        } else {
+            String::new()
+        };
+        game.envars = if let Some(ev) = cfg.get("envars") {
+            ev.to_string()
+        } else {
+            String::new()
+        };
+        game.args = if let Some(ag) = cfg.get("args") {
+            ag.to_string()
+        } else {
+            String::new()
+        };
+    }
+    Ok(game.clone())
+}
+
+fn scan_games() -> Result<Vec<GameInfo>, String>
+{
+    let cfgdir = my_exe_path().unwrap().join("codlinux_conf");
+    if !cfgdir.exists() {
+        println!("{:#?} does not exist", cfgdir);
+        create_dir_all(cfgdir).unwrap();
+    }
+
+    let executables = util::get_exes().unwrap_or_default();
+    let games: Vec<GameInfo> = executables.into_iter().flat_map(|exe| {
+        let name_version: Vec<(String, String)> = util::name_version_info(&exe).unwrap();
+        //let exe_clone = exe.clone();
+        name_version.into_iter().map(move |(name, version)| {
+            let cfg_file = util::my_exe_path().unwrap().join(format!("codlinux_conf/{}.cfg", &name));
+            let mut wine_prefix = String::new();
+            let mut env_vars = String::new();
+            let mut args_ = String::new();
+            if cfg_file.exists() {
+                let cfg = util::get_game_config(&name).unwrap();
+                wine_prefix = cfg.get("wine_prefix").unwrap().to_string();
+                env_vars = cfg.get("envars").unwrap().to_string();
+                args_ = cfg.get("args").unwrap().to_string();
+            }
+            GameInfo {
+                name,
+                version,
+                path: exe.clone(),
+                wineprefix: wine_prefix,
+                envars: env_vars,
+                args: args_,
+            }
+        })
+    }).collect();
+
+    Ok(games)
+}
+
+fn main() -> io::Result<()>
 {
     println!("CoDLinux v{}", &VERSION);
+    create_dir_all(my_exe_path()?.join("codlinux_conf"))?;
+    if util::load_setting("default_wine_prefix").unwrap().is_empty() {
+        util::save_setting("default_wine_prefix", "$HOME/.wine").unwrap();
+    }
+    util::extract_icon()?;
 
-    let resolution = utils::get_display_mode();
+    let resolution = util::get_display_mode();
     if let Some((width, height, rate)) = resolution {
         println!("CoDLinux: Display resolution: {}x{} {} Hz", width, height, rate);
     }
     else {
         println!("CoDLinux: Unable to get display resolution.");
+    }
+    println!("{:#?}", util::DISPLAY_OUTPUT);
+    if true {
+        //std::process::exit(0);
     }
 
     println!("CoDLinux: Looking for game executables...");
@@ -25,59 +554,36 @@ fn main()
     let mut cod1 = false;
     let mut iw1x = false;
     let mut t1x = false;
-    let mut launched = false;
-    let executables = utils::get_executables();
-    if executables.is_empty() {
+    let games = scan_games().unwrap();
+
+    if games.is_empty() {
         println!("CoDLinux: No game executables found.");
-        return;
-    }
-    println!("CoDLinux: Found game executables:");
-    for executable in &executables {
-        println!("  {}", executable);
     }
 
-    for executable in &executables {
-        let exe_name = utils::get_exe_name(executable);
-        if exe_name.to_lowercase() == "codmp.exe" {
-            cod1 = true;
+    for game in &games {
+        match game.version.as_str() {
+            "1.1" => cod1 = true,
+            "1.51" => uo = true,
+            _ => ()
         }
-        else if exe_name.to_lowercase() == "coduomp.exe" {
-            uo = true;
-        }
-        else if exe_name.to_lowercase() == "iw1x.exe" {
-            iw1x = true;
-        }
-        else if exe_name.to_lowercase() == "t1x.exe" {
-            t1x = true;
+        match game.name.as_str() {
+            "IW1X" => iw1x = true,
+            "T1X" => t1x = true,
+            _ => ()
         }
     }
 
-    utils::extract_icon().unwrap();
-
-    if uo {
-        create_desktop_file(&uo, &my_exe_path().to_string_lossy().to_string()).unwrap();
-        if t1x {
-            reg_uri_scheme("t1x").unwrap();
-        }
+    if cod1 || uo {
+        util::create_desktop_file(&uo, my_exe_path().unwrap().to_str().unwrap())?;
     }
-    if cod1 && !uo {
-        create_desktop_file(&uo, &my_exe_path().to_string_lossy().to_string()).unwrap();
-        if iw1x {
-            reg_uri_scheme("iw1x").unwrap();
-        }
+    if t1x && uo {
+        util::reg_uri_scheme("t1x")?;
+    }
+    else if iw1x && cod1 {
+        util::reg_uri_scheme("iw1x")?;
     }
 
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let backupprefix = format!("{}/.wine", home);
-
-    let mut wineprefix = utils::load_setting("wine_prefix").unwrap_or_else(|_| {
-        backupprefix.clone()
-    }
-    );
-    if &wineprefix == "" {
-        wineprefix = backupprefix;
-    }
-
+    let mut launched = false;
     let mut args: Vec<String> = std::env::args().skip(1).collect::<Vec<_>>();
     if let Some(first_arg) = args.get(0) {
         if first_arg.starts_with("iw1x://") || first_arg.starts_with("t1x://") {
@@ -87,23 +593,19 @@ fn main()
             let ip = parts.get(0).unwrap_or(&"127.0.0.1");
             let port = parts.get(1).unwrap_or(&"28960");
 
+            let scheme = first_arg.split(":").nth(0).unwrap().to_uppercase(); // IW1X or T1X
+
             args[0] = format!("+connect {}:{}", ip, port);
+            args[1] = String::from("+set r_ignorehwgamma 1");
 
             let args_str = args.join(" ");
-            if iw1x {
-                for exe in &executables {
-                    if exe.to_lowercase().contains("iw1x.exe") {
-                        notify("Launching iw1x...", 2000, false).unwrap();
-                        launch_game(&wineprefix, exe, &args_str).unwrap();
-                        launched = true;
-                    }
-                }
-            }
-            if t1x {
-                for exe in &executables {
-                    if exe.to_lowercase().contains("t1x.exe") {
-                        notify("Launching t1x...", 2000, false).unwrap();
-                        launch_game(&wineprefix, exe, &args_str).unwrap();
+            if iw1x || t1x {
+                for game in &games {
+                    if game.name == scheme {
+                        util::notify(&format!("Launching {scheme}..."), 2000, false).unwrap();
+                        let mut game = load_game_settings(game.clone()).unwrap(); // TODO check if there's a better way to do this
+                        game.args = format!("{} {}", &game.args, &args_str);
+                        util::launch_game(&game)?;
                         launched = true;
                     }
                 }
@@ -113,230 +615,25 @@ fn main()
 
     if !launched {
         let args_str = args.join(" ");
-        //let saved_game = utils::recall_game().unwrap();
-        let saved_game = utils::load_setting("remembered_game").unwrap();
-        if &saved_game != "" {
-            launch_game(&wineprefix, &saved_game, &args_str).unwrap();
-            launched = true;
+        let saved_game = util::load_setting("saved_game").unwrap();
+        if !saved_game.is_empty() {
+            for game in &games {
+                if game.name == saved_game {
+                    let mut game = load_game_settings(game.clone()).unwrap(); // TODO check if there's a better way to do this
+
+                    game.args = format!("{} {}", &game.args, &args_str);
+
+                    util::launch_game(&game)?;
+                    launched = true;
+                }
+            }
         }
     }
+
     if !launched {
-        println!("CoDLinux: Launching GUI...");
-        let args_str = args.join(" ");
-        let options = eframe::NativeOptions {
-            viewport: egui::ViewportBuilder::default()
-                .with_inner_size([400.0, 140.0 + 115.0 * executables.len() as f32]),
-            centered: true,
-            ..Default::default()
-        };
-        println!("executables: {:.2}", executables.len() as f32);
-
-        let game_thread = Arc::new(Mutex::new(None::<thread::JoinHandle<()>>));
-        let dl_thread = Arc::new(Mutex::new(None::<thread::JoinHandle<()>>));
-        let dl_size = utils::get_download_size();
-        let app = CoDLinuxApp::new(executables.clone(), args_str.clone(), uo, game_thread.clone(), dl_thread.clone(), wineprefix.clone(), dl_size);
-
-        eframe::run_native(
-            "CoDLinux",
-            options,
-            Box::new(|_cc| Ok(Box::new(app))),
-        ).unwrap();
-
-        // Join the game thread after GUI closes
-        if let Some(handle) = game_thread.lock().unwrap().take() {
-            handle.join().unwrap();
-        }
-        if let Some(handle) = dl_thread.lock().unwrap().take() {
-            handle.join().unwrap();
-        }
-        println!("CoDLinux: GUI closed.");
+        let app = RelmApp::new("wolfpack.kazam.codlinux");
+        app.run::<App>(games);
     }
-}
 
-pub struct CoDLinuxApp
-{
-    executables: Vec<String>,
-    args: String,
-    uo: bool,
-    game_thread: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
-    dl_thread: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
-    remember: bool,
-    wine_prefix: String,
-    show_update_popup: bool,
-    downloading: bool,
-    dl_size: String,
-}
-
-impl CoDLinuxApp
-{
-    fn new(executables: Vec<String>, args: String, uo: bool, game_thread: Arc<Mutex<Option<thread::JoinHandle<()>>>>, dl_thread: Arc<Mutex<Option<thread::JoinHandle<()>>>>, wine_prefix: String, dl_size: String) -> Self {
-        println!("CoDLinux: Creating app...");
-        println!("CoDLinux: Prefix: {:?}", wine_prefix);
-        CoDLinuxApp {
-            executables,
-            args,
-            uo,
-            game_thread,
-            dl_thread,
-            remember: false,
-            wine_prefix,
-            show_update_popup: false,
-            downloading: false,
-            dl_size,
-        }
-    }
-}
-
-impl eframe::App for CoDLinuxApp
-{
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let mut visuals = egui::Visuals::default();
-        visuals.text_cursor = egui::style::TextCursorStyle {
-            stroke: egui::Stroke::new(2.0, egui::Color32::from_rgb(187, 220, 61)),
-            preview: true,
-            blink: true,
-            on_duration: 0.5,
-            off_duration: 0.5,
-        };
-        ctx.set_visuals(visuals);
-
-        let mut style = (*ctx.style()).clone();
-        style.visuals.widgets.hovered.bg_stroke.color = egui::Color32::from_rgb(180, 127, 240);
-        style.visuals.widgets.active.bg_stroke.color = egui::Color32::from_rgb(187, 220, 61);
-        style.visuals.widgets.open.bg_stroke.color = egui::Color32::from_rgb(187, 220, 61);
-        style.visuals.widgets.hovered.bg_stroke.width = 1.5;
-        style.visuals.widgets.active.bg_stroke.width = 2.0;
-        ctx.set_style(style);
-
-        if !self.show_update_popup {
-            if utils::UPDATE_AVAILABLE.load(Ordering::Relaxed) {
-                self.show_update_popup = true;
-                utils::UPDATE_AVAILABLE.store(false, Ordering::Relaxed);
-                println!("Setting show_update_popup to true");
-            }
-        }
-
-        if utils::DL_DONE.load(Ordering::Relaxed) {
-            self.show_update_popup = false;
-            self.downloading = false;
-            notify("Download Complete!", 10000, false).unwrap();
-            std::process::exit(0);
-        }
-
-        egui::CentralPanel::default().show(ctx, |ui| {
-            if self.show_update_popup {
-                ui.disable();
-            }
-            ui.visuals_mut().selection.stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(187, 220, 61));
-            ui.vertical_centered(|ui| {
-                ui.heading("Choose a Game");
-                for executable in &self.executables {
-                    let game_name = get_fancy_name(executable, &self.uo);
-
-                    let text = egui::RichText::new(&game_name).size(24.0).strong();
-                    let button = egui::Button::new(text).min_size(egui::vec2(300.0, 100.0));
-
-                    if ui.add(button).clicked() {
-                        if self.remember {
-                            println!("CoDLinux: Remembering choice for {}, path: {}", &game_name, &executable);
-                            //let _ = utils::remember_game(&executable);
-                            let _ = utils::save_setting("remembered_game", &executable);
-                        }
-                        let exe = executable.clone();
-                        let args = self.args.clone();
-
-                        let wine_prefix = self.wine_prefix.clone();
-                        let game_handle = thread::spawn(move || {
-                            let rrr = utils::save_setting("wine_prefix", &wine_prefix);
-                            if rrr.is_err() {
-                                println!("CoDLinux: Error saving wine prefix: {}", rrr.unwrap_err());
-                            }
-                            println!("CoDLinux: prefix: {}", &wine_prefix);
-                            let _ = launch_game(&wine_prefix, &exe, &args);
-                        });
-                        *self.game_thread.lock().unwrap() = Some(game_handle);
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
-                }
-
-                ui.heading("Options");
-
-                ui.checkbox(&mut self.remember, "Remember my choice");
-                let text_edit = ui.add(egui::TextEdit::singleline(&mut self.wine_prefix)
-                    .hint_text("Wine Prefix")
-                    .desired_width(200.0));
-                
-                if text_edit.changed() {
-                    if let Ok(new_prefix) = std::fs::canonicalize(&self.wine_prefix) {
-                        self.wine_prefix = new_prefix.to_string_lossy().to_string();
-                        println!("CoDLinux: New Wine Prefix: {}", self.wine_prefix);
-                    }
-                }
-
-                let update_button = egui::Button::new(egui::RichText::new("Check For Updates").size(16.0));//.min_size(egui::vec2(300.0, 100.0));
-                if ui.add(update_button).clicked() {
-                    let _ = thread::spawn(move || {
-                        notify("Checking for updates...", 3000, false).unwrap();
-                        let check:bool = utils::check_update().unwrap();
-                        if check {
-                            utils::UPDATE_AVAILABLE.store(true, Ordering::Relaxed);
-                            notify("Update available!", 3000, false).unwrap();
-                        }
-                        else {
-                            notify("No update available!", 3000, false).unwrap();
-                        }
-                    });
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::BOTTOM), |ui| {
-                    ui.label(format!("v{}", &VERSION));
-                });
-            });
-        });
-
-        if self.show_update_popup {
-            let centered = ctx.screen_rect().center();
-            egui::Window::new("Update")
-                .default_pos(centered)
-                .pivot(egui::Align2::CENTER_CENTER)
-                .default_size(egui::Vec2::new(250.0, 50.0))
-                //.auto_sized()
-                .collapsible(false)
-                .resizable(false)
-                .show(ctx, |ui| {
-                    ui.vertical_centered(|ui| {
-                        if !self.downloading && !utils::DL_STARTED.load(Ordering::Relaxed) {
-                            ui.label("A new version of CoDLinux available!");
-                        }
-                        else {
-                            ui.label(format!("Downloading... ({})", &self.dl_size.to_string()));
-                            let spinner = egui::widgets::Spinner::new().color(egui::Color32::from_rgb(187, 220, 61));
-                            ui.add(spinner);
-
-                            if !utils::DL_STARTED.load(Ordering::Relaxed) && !utils::DL_DONE.load(Ordering::Relaxed) {
-                                let dl_handle = thread::spawn(move || {
-                                    println!("CoDLinux: downloading update...");
-                                    let _ = utils::dl_update();
-                                });
-        
-                                *self.dl_thread.lock().unwrap() = Some(dl_handle);
-                            }
-                        }
-
-                        ui.horizontal_centered(|ui| {
-                            if !self.downloading && !utils::DL_STARTED.load(Ordering::Relaxed) {
-
-                                ui.add_space(65.0);
-        
-                                if ui.button("Download").clicked() {
-                                    self.downloading = true;
-                                }
-                                if ui.button("Close").clicked() {
-                                    self.show_update_popup = false;
-                                }
-                            }
-                        });
-                    });
-                });
-        }
-    }
+    Ok(())
 }

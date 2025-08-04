@@ -1,17 +1,14 @@
-###### toplink
-
 # codlinux
 Unlike CoD 2, CoD 1/UO require some environment variables to be set to run through wine (see [this](https://appdb.winehq.org/objectManager.php?sClass=version&iId=36969)).
 To run the games, you need a script. But using scripts is a little inconvenient. This wrapper allows you to run these games easily and also sets up default app (itself) for opening `iw1x://` uri scheme.
 
 ## Notes
-- You can remove the remembered game from codlinux.cfg. For example,
+- You can remove the remembered game from ``codlinux_conf/codlinux.cfg``. For example,
   ![Screenshot_2025-04-21_16-41-01](https://github.com/user-attachments/assets/144e615d-1fc0-484e-8730-213c59df2699)
-- For safety reasons, the wine prefix folder should be created **before** setting in CoDLinux
 - You can only check for updates 60 times per hour
 
 ## Todo
-- Verify the game exe (version)
+- Add an option to create a launcher of individual games
 
 ## Screenshots
 
