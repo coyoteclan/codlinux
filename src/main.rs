@@ -220,10 +220,12 @@ impl FactoryComponent for GameInfo {
                                 },
                             },
 
+                            #[name = "remember_button"]
                             gtk::Button {
                                 set_label: "Remember Game",
-                                connect_clicked[sender, index] => move |_| {
+                                connect_clicked[sender, index, btn = remember_button.clone()] => move |_| {
                                     sender.output(GameOutput::Remembered(index.clone())).unwrap();
+                                    btn.set_sensitive(false);
                                 },
                             },
 

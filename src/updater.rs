@@ -13,6 +13,7 @@ pub(crate) fn show_update_window(app: Application)
     let builder = Updater::builder();
     app.add_window(&builder.root);
     builder.root.set_visible(true);
+    builder.root.set_title("Updater".into());
     builder.launch("Updater".into()).detach_runtime();
 }
 
@@ -183,7 +184,7 @@ impl Component for Updater {
 
                             let difference = result.published_at - compile_time;
                             out.send(CmdOut::Checked(
-                                Ok(difference < chrono::Duration::minutes(5))
+                                Ok(difference > chrono::Duration::minutes(5))
                             )).unwrap();
                         })
                             .drop_on_shutdown()
