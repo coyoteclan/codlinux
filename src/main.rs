@@ -268,7 +268,7 @@ impl Component for App {
             gtk::Box {
                 set_orientation: Orientation::Vertical,
                 set_spacing: 5,
-                set_margin_all: 8,
+                set_margin_all: 12,
 
                 gtk::Box {
                     set_orientation: Orientation::Horizontal,

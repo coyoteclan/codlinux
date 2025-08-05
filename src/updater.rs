@@ -33,6 +33,8 @@ pub struct Widgets {
     cancelbutton: gtk::Button,
     okbutton: gtk::Button,
     label: gtk::Label,
+    whatsnew: gtk::Label,
+    changelog_container: gtk::ScrolledWindow,
     sizelabel: gtk::Label,
     spinner: gtk::Spinner,
     progress: gtk::ProgressBar,
@@ -54,7 +56,7 @@ pub enum Output {
 pub enum CmdOut {
     Checking,
     /// The final output of the command.
-    Checked(Result<bool, ()>),
+    Checked(Result<(bool, String), String>),
     Download,
     /// Progress update from a command.
     Progress(String, f32),
@@ -72,8 +74,8 @@ impl Component for Updater {
 
     fn init_root() -> Self::Root {
         gtk::Window::builder()
-            .width_request(300)
-            .height_request(100)
+            .width_request(350)
+            .height_request(150)
             .build()
     }
 
@@ -106,6 +108,23 @@ impl Component for Updater {
 
                 append: spinner = &gtk::Spinner {
                     set_visible: false,
+                },
+
+                #[name = "changelog_container"]
+                gtk::ScrolledWindow {
+                    set_width_request: 250,
+                    set_height_request: 75,
+                    set_visible: false,
+                    set_policy: (gtk::PolicyType::Automatic, gtk::PolicyType::Automatic),
+
+                    //append: whatsnew = &gtk::Label {
+                    #[name = "whatsnew"]
+                    gtk::Label {
+                        set_markup: "",
+                        set_hexpand: true,
+                        set_align: gtk::Align::Start,
+                        set_margin_all: 4,
+                    },
                 },
 
                 append: progress = &gtk::ProgressBar {
@@ -154,6 +173,8 @@ impl Component for Updater {
             model: Updater::default(),
             widgets: Widgets {
                 label,
+                whatsnew,
+                changelog_container,
                 sizelabel,
                 checkbutton,
                 updatebutton,
@@ -174,17 +195,37 @@ impl Component for Updater {
                     shutdown
                         .register(async move {
                             out.send(CmdOut::Checking).unwrap();
-                            //std::thread::sleep(std::time::Duration::from_secs(3));
-                            //out.send(CmdOut::Checked(Ok(true))).unwrap();
                             let result = fetch_latest_release().await.unwrap();
-                            //println!("{:#?}", result);
+
                             let compile_time = DateTime::parse_from_rfc3339(
                                 compile_time::datetime_str!()
                             ).unwrap().with_timezone(&Utc);
 
                             let difference = result.published_at - compile_time;
+                            let body = result.body.clone();
+                            let mut changelog = String::new();
+                            let lines = body.lines().collect::<Vec<_>>();
+                            for line in &lines[1..] {
+                                // trim end to avoid spurious `\r`
+                                let line = line.trim_end();
+
+                                if let Some(text) = line.strip_prefix("## ") {
+                                    changelog.push_str(&format!("<b>{}</b>\n\n", text));
+                                }
+                                else if let Some(item) = line.strip_prefix("- ") {
+                                    let item = process_inline_code(item);
+                                    changelog.push_str(&format!("• {}\n", item));
+                                }
+                                else if line.is_empty() {
+                                    changelog.push('\n');
+                                }
+                                else {
+                                    let text = process_inline_code(line);
+                                    changelog.push_str(&format!("{}\n", text));
+                                }
+                            }
                             out.send(CmdOut::Checked(
-                                Ok(difference > chrono::Duration::minutes(5))
+                                Ok((difference > chrono::Duration::minutes(5), changelog))
                             )).unwrap();
                         })
                             .drop_on_shutdown()
@@ -346,19 +387,29 @@ impl Component for Updater {
                 CmdOut::Checked(result) => {
                     widgets.spinner.set_visible(false);
                     widgets.checkbutton.set_visible(false);
-                    if result.unwrap() {
-                        widgets.label.set_label("Do you want to update?");
-                        widgets.updatebutton.set_visible(true);
-                        widgets.cancelbutton.set_visible(true);
-                    }
-                    else {
-                        widgets.label.set_text("No update available.");
-                        widgets.okbutton.set_visible(true);
+                    match result {
+                        Ok((check, changelog)) => {
+                            if *check {
+                                widgets.label.set_label("What's new?");
+                                widgets.whatsnew.set_markup(&changelog);
+                                widgets.changelog_container.set_visible(true);
+                                widgets.whatsnew.set_visible(true);
+                                widgets.updatebutton.set_visible(true);
+                                widgets.cancelbutton.set_visible(true);
+                            }
+                            else {
+                                widgets.label.set_text("No update available.");
+                                widgets.okbutton.set_visible(true);
+                            }
+                        }
+                        Err(e) => widgets.label.set_label(&format!("Error: {e}")),
                     }
                 }
                 CmdOut::Download => {
                     widgets.updatebutton.set_visible(false);
                     widgets.cancelbutton.set_visible(false);
+                    widgets.whatsnew.set_visible(false);
+                    widgets.changelog_container.set_visible(false);
                     widgets.label.set_label("Downloading...");
                     widgets.label.set_halign(gtk::Align::Start);
                     widgets.sizelabel.set_halign(gtk::Align::End);
@@ -395,6 +446,7 @@ const REPO: &str = "codlinux";
 struct GHRelease {
     published_at: DateTime<Utc>,
     assets: Vec<ReleaseAsset>,
+    body: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -425,4 +477,24 @@ async fn fetch_latest_release() ->Result<GHRelease, reqwest::Error>
     let release: GHRelease = response.json().await?;
     Ok(release)
     //}
+}
+
+fn process_inline_code(s: &str) -> String {
+    let mut out = String::new();
+    let mut parts = s.split("``");
+    if let Some(first) = parts.next() {
+        out.push_str(first);
+    }
+    let mut inside = true;
+    for piece in parts {
+        if inside {
+            out.push_str("<tt>");
+            out.push_str(piece);
+            out.push_str("</tt>");
+        } else {
+            out.push_str(piece);
+        }
+        inside = !inside;
+    }
+    out
 }
