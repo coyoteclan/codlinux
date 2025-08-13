@@ -1,3 +1,8 @@
+# INFO
+Migrated to GitLab:
+https://gitlab.com/kazam0180/codlinux
+
+
 # codlinux
 [![Rust Release](https://github.com/coyoteclan/codlinux/actions/workflows/rust.yml/badge.svg)](https://github.com/coyoteclan/codlinux/actions/workflows/rust.yml)
 
